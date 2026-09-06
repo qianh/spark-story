@@ -14,10 +14,19 @@ export async function probe(c: Connection) {
       version: "仅检查环境变量；未发起付费请求",
     };
   await access(c.executable, constants.X_OK);
-  const child = Bun.spawn([c.executable, "--version"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  const child = Bun.spawn(
+    c.provider === "qwen-tts"
+      ? [
+          c.executable,
+          "-c",
+          "import importlib.metadata; print('mlx-audio '+importlib.metadata.version('mlx-audio'))",
+        ]
+      : [c.executable, "--version"],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
   const timer = setTimeout(() => child.kill(), 5000);
   try {
     const [output, , code] = await Promise.all([
@@ -107,6 +116,8 @@ export async function generate(
     onProtocol: (event: any) => void;
   },
 ): Promise<string> {
+  if (c.provider === "qwen-tts")
+    throw Error("Qwen3-TTS 仅用于语音模型，不能绑定文本生成或主控审核");
   if (c.transport === "api")
     return generateApi(c, prompt, signal, images, onText);
   if (c.provider === "grokcli")

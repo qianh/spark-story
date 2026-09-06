@@ -788,6 +788,14 @@ function App() {
                               }),
                             )
                           }
+                          onRetryVoices={(character) =>
+                            act(() =>
+                              api(`/tasks/${task.id}/retry-voices`, {
+                                revision: task.revision,
+                                ...(character ? { character } : {}),
+                              }),
+                            )
+                          }
                           onRetryAsset={(assetId) =>
                             act(() =>
                               api(`/tasks/${task.id}/retry-asset`, {
@@ -2222,6 +2230,7 @@ function ConnectionForm({
                 ["claude", "Claude Code"],
                 ["grok-build", "Grok Build"],
                 ["grokcli", "grokcli（待验证）"],
+                ["qwen-tts", "Qwen3-TTS · 本机 MLX 配音"],
               ]
             : [
                 ["compatible", "OpenAI 兼容协议"],
@@ -2329,7 +2338,9 @@ function ConnectionForm({
           }
         />
       </label>
-      {(transport === "api" || provider === "grok-build") && (
+      {(transport === "api" ||
+        provider === "grok-build" ||
+        provider === "qwen-tts") && (
         <>
           <label>
             高级参数（JSON，可留空）
@@ -2354,6 +2365,15 @@ function ConnectionForm({
           )}
           {settingsError && <p className="job-error">{settingsError}</p>}
         </>
+      )}
+      {provider === "qwen-tts" && (
+        <p className="muted">
+          可执行文件填写 MLX 环境的 Python 绝对路径，模型填写 Qwen3-TTS
+          CustomVoice 的 MLX 模型 ID 或本地路径。可绑定语音模型，无需 API
+          Key。高级参数支持 voice（默认 Vivian）、language（默认
+          Chinese）、instructions（情绪、语速与语气，不要包含台词）、transcriptionConnectionId（独立转写连接
+          ID）。预设音色配音不等于声音克隆。首次生成需要加载模型。
+        </p>
       )}
       {provider === "grok-build" && (
         <p className="muted">

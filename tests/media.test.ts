@@ -715,3 +715,74 @@ test("语音连接缺失时先保存定妆图，补齐连接后复用图片继�
   expect(images).toBe(1);
   expect(speech).toBe(1);
 });
+
+test("试听支持空列表、单角色和全部强制重做，失败保留完成项与定妆图", async () => {
+  const f = await fixture();
+  const { MediaPipeline } = await import("../apps/server/media-pipeline");
+  const task = f.store.tasks(f.project.id).find((t) => t.stage === 3)!;
+  const assets = ["甲", "乙"].map((name) => ({
+    id: name,
+    name,
+    kind: "character",
+    prompt: name,
+    imageId: `image-${name}`,
+  }));
+  f.store.publish(
+    task.id,
+    task.revision,
+    JSON.stringify({
+      type: "assets",
+      data: { summary: "角色", assets, voices: [] },
+    }),
+  );
+  let calls = 0,
+    failAt = 0;
+  const pipeline = new MediaPipeline({
+    store: f.store,
+    active: new Map(),
+    media: {
+      connection: () => f.c,
+      ensure: async (...args: any[]) => {
+        expect(args[2]).toBe("speech");
+        expect(args[8]).toBe(true);
+        calls++;
+        if (calls === failAt) throw Error("测试失败");
+        return `audio-${calls}`;
+      },
+    },
+  } as unknown as Runtime);
+  const run = (character?: string) =>
+    pipeline.retryVoices(
+      f.store.task(task.id),
+      character,
+      new AbortController().signal,
+    );
+  const one = await run("甲");
+  expect(one.data.voices).toHaveLength(1);
+  const both = await run();
+  expect(both.data.voices.map((v) => v.audioId)).toEqual([
+    "audio-2",
+    "audio-3",
+  ]);
+  const single = await run("甲");
+  expect(single.data.voices.map((v) => v.audioId)).toEqual([
+    "audio-4",
+    "audio-3",
+  ]);
+  expect(single.data.assets.map((a) => a.imageId)).toEqual([
+    "image-甲",
+    "image-乙",
+  ]);
+  failAt = 6;
+  await expect(run()).rejects.toThrow("测试失败");
+  const saved = f.store.one<Artifact>(
+    "SELECT * FROM artifacts WHERE taskId=? ORDER BY rowid DESC LIMIT 1",
+    task.id,
+  )!;
+  expect(
+    JSON.parse(saved.content).data.voices.map((v: any) => v.audioId),
+  ).toEqual(["audio-5", "audio-3"]);
+  expect(saved.status).toBe("candidate");
+  expect(f.store.task(task.id).status).toBe("needs_user");
+  await expect(run("不存在")).rejects.toThrow("没有可生成");
+});

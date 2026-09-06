@@ -101,6 +101,7 @@ export const connectionInput = z
       "claude",
       "grok-build",
       "grokcli",
+      "qwen-tts",
       "openai",
       "anthropic",
       "compatible",
@@ -124,11 +125,21 @@ export const connectionInput = z
     if (
       v.transport === "cli" &&
       (!v.executable.startsWith("/") ||
-        !["codex", "claude", "grok-build", "grokcli"].includes(v.provider))
+        !["codex", "claude", "grok-build", "grokcli", "qwen-tts"].includes(
+          v.provider,
+        ))
     )
       c.addIssue({
         code: "custom",
         message: "CLI 需要绝对路径和对应的工具类型",
+      });
+    if (
+      v.provider === "qwen-tts" &&
+      (v.transport !== "cli" || !v.model.includes("CustomVoice"))
+    )
+      c.addIssue({
+        code: "custom",
+        message: "Qwen 本地配音需要 CLI 和 CustomVoice 模型 ID 或路径",
       });
     if (v.transport === "api") {
       try {

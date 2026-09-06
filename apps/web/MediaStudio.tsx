@@ -258,7 +258,7 @@ export function MediaJobs({
                 inputs: f.getAll("inputs").filter(Boolean),
                 options: {
                   duration: Number(f.get("duration") || 6),
-                  voice: f.get("voice") || "alloy",
+                  ...(f.get("voice") ? { voice: f.get("voice") } : {}),
                 },
               });
               setOpen(false);
@@ -338,7 +338,10 @@ export function MediaJobs({
           {kind === "speech" && (
             <label>
               声音 ID
-              <input name="voice" defaultValue="alloy" />
+              <input
+                name="voice"
+                placeholder="留空使用连接默认音色；Qwen 可选 Vivian、Serena"
+              />
             </label>
           )}
           <button className="button primary">
@@ -428,6 +431,7 @@ export function BundleView({
   files,
   onSave,
   onRetryAsset,
+  onRetryVoices,
   busy,
   production,
 }: {
@@ -435,6 +439,7 @@ export function BundleView({
   files: MediaFile[];
   onSave: (content: string) => void;
   onRetryAsset?: (assetId: string) => void;
+  onRetryVoices?: (character?: string) => void;
   busy: boolean;
   production?: ProductionRules;
 }) {
@@ -541,6 +546,52 @@ export function BundleView({
             ))}
           </div>
           <h3 className="section-heading">角色声音试听</h3>
+          {onRetryVoices && (
+            <button
+              className="button secondary compact"
+              disabled={
+                busy ||
+                editing ||
+                !data.assets.some((a: any) => a.kind === "character")
+              }
+              onClick={() => onRetryVoices()}
+            >
+              <RefreshCw size={13} />
+              {busy
+                ? "处理中…"
+                : data.voices.length
+                  ? "全部重新生成试听"
+                  : "生成全部角色试听"}
+            </button>
+          )}
+          {!data.voices.length && (
+            <p className="muted">
+              尚未生成声音试听。首次试听使用通用测试句；生成后可播放检查。
+            </p>
+          )}
+          {onRetryVoices &&
+            [
+              ...new Set<string>(
+                data.assets
+                  .filter((a: any) => a.kind === "character")
+                  .map((a: any) => a.name),
+              ),
+            ]
+              .filter(
+                (name) => !data.voices.some((v: any) => v.character === name),
+              )
+              .map((name) => (
+                <div className="voice-option voice-option-empty" key={name}>
+                  <strong>{name}</strong>
+                  <button
+                    className="button secondary compact"
+                    disabled={busy || editing}
+                    onClick={() => onRetryVoices(name)}
+                  >
+                    生成此角色试听
+                  </button>
+                </div>
+              ))}
           {data.voices.map((voice: any, i: number) => (
             <div className="voice-option" key={i}>
               <div>
@@ -550,6 +601,16 @@ export function BundleView({
                 </small>
               </div>
               <MediaPreview id={voice.audioId} files={files} />
+              {onRetryVoices && (
+                <button
+                  className="button secondary compact"
+                  disabled={busy || editing}
+                  onClick={() => onRetryVoices(voice.character)}
+                >
+                  <RefreshCw size={13} />
+                  重新生成此角色
+                </button>
+              )}
               {editing && (
                 <button
                   className="button secondary compact"

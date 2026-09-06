@@ -199,6 +199,19 @@ const server = Bun.serve({
         );
         return json({ ok: true });
       }
+      const retryVoices = path.match(/^\/api\/tasks\/([^/]+)\/retry-voices$/);
+      if (retryVoices && req.method === "POST") {
+        const value = revision
+          .extend({ character: z.string().min(1).max(200).optional() })
+          .parse(await body(req));
+        return json(
+          await runtime.retryVoices(
+            retryVoices[1],
+            value.revision,
+            value.character,
+          ),
+        );
+      }
       const retryAsset = path.match(/^\/api\/tasks\/([^/]+)\/retry-asset$/);
       if (retryAsset && req.method === "POST") {
         const value = revision

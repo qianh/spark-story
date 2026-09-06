@@ -1,3 +1,4 @@
+import { runQwenTts, qwenReady, qwenOptions } from "./qwen-tts";
 import { existsSync } from "node:fs";
 import { prepareVisualRequest } from "../../packages/media-profiles";
 import { runGrokMedia, grokResultPath } from "./grok-media";
@@ -41,6 +42,8 @@ export class MediaService {
     return c;
   }
   validate(c: Connection, kind: MediaKind) {
+    if (c.transport === "cli" && c.provider === "qwen-tts" && kind === "speech")
+      return;
     if (
       c.transport === "cli" &&
       c.provider === "grok-build" &&
@@ -114,6 +117,7 @@ export class MediaService {
         inputFiles[1].kind !== "audio")
     )
       throw Error("口型同步需要依次选择一个视频和一个配音文件");
+    if (c.provider === "qwen-tts") qwenOptions({ ...c.settings, ...options });
     const prepared = prepareVisualRequest(c, kind, prompt, inputs.length, {
       ...c.settings,
       ...options,
@@ -237,8 +241,10 @@ export class MediaService {
       ) &&
       !job.remoteId &&
       !(
-        JSON.parse(job.connection).provider === "grok-build" &&
-        existsSync(grokResultPath(this.root, job.id))
+        (JSON.parse(job.connection).provider === "grok-build" &&
+          existsSync(grokResultPath(this.root, job.id))) ||
+        (JSON.parse(job.connection).provider === "qwen-tts" &&
+          existsSync(qwenReady(this.root, job.id)))
       )
     )
       throw Error(
@@ -288,7 +294,7 @@ export class MediaService {
         job.projectId,
         job.taskId,
         job.revision,
-        `${job.agent}-${job.id.slice(0, 8)}.${kind === "image" ? "png" : kind === "video" ? "mp4" : "mp3"}`,
+        `${job.agent}-${job.id.slice(0, 8)}.${kind === "image" ? "png" : kind === "video" ? "mp4" : mime?.includes("wav") ? "wav" : "mp3"}`,
         bytes,
         mime ||
           `${kind}/${kind === "image" ? "png" : kind === "video" ? "mp4" : "mpeg"}`,
@@ -311,7 +317,8 @@ export class MediaService {
         error = e instanceof Error ? e.message : String(e);
       const status =
         c.transport === "cli" && current.status !== "queued"
-          ? existsSync(grokResultPath(this.root, job.id))
+          ? existsSync(grokResultPath(this.root, job.id)) ||
+            existsSync(qwenReady(this.root, job.id))
             ? "detached"
             : "unknown"
           : signal.aborted
@@ -378,6 +385,10 @@ export class MediaService {
     ids: string[],
     signal: AbortSignal,
   ): Promise<any> {
+    if (c.provider === "qwen-tts")
+      return runQwenTts(c, j, this.root, signal, (message) =>
+        this.store.event(j.projectId, j.taskId, "media.local", message),
+      );
     if (c.transport === "cli")
       return runGrokMedia(
         c,
@@ -713,7 +724,20 @@ export class MediaService {
   }
   async transcribe(fileId: string, signal: AbortSignal) {
     const file = this.files.get(fileId),
-      c = this.connection("speech");
+      speech = this.connection("speech"),
+      c =
+        speech.provider === "qwen-tts"
+          ? typeof speech.settings?.transcriptionConnectionId === "string"
+            ? this.connection(
+                "speech",
+                speech.settings.transcriptionConnectionId,
+              )
+            : null
+          : speech;
+    if (!c || c.transport !== "api")
+      throw Error(
+        "本地配音已保存；Qwen3-TTS 不提供语音识别，请在连接高级参数配置 transcriptionConnectionId 指向支持转写的 API 连接后继续审核",
+      );
     const cached = this.store.one<{ text: string }>(
       "SELECT text FROM media_transcripts WHERE fileId=? AND connectionId=?",
       fileId,

@@ -317,6 +317,15 @@
 .voice-option > .button {
   margin-top: 10px;
 }
+.voice-option-empty {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+}
+.voice-option-empty > .button {
+  margin-top: 0;
+}
 .shot-editor {
   border: 1px solid var(--line);
   border-radius: 8px;

@@ -1,3 +1,4 @@
+import { qwenVoices } from "./qwen-tts";
 import { mediaProfile } from "../../packages/media-profiles";
 import type { Runtime } from "./runtime";
 import { parseResult } from "./connectors";
@@ -218,6 +219,126 @@ export class MediaPipeline {
     );
     return next;
   }
+  async retryVoices(
+    task: Task,
+    character: string | undefined,
+    signal: AbortSignal,
+  ) {
+    if (task.stage !== 3) throw Error("仅定妆与资产阶段支持角色声音试听");
+    if (["running", "reviewing", "coordinating"].includes(task.status))
+      throw Error("任务正在执行，请先中断再重新生成试听");
+    const { store, media } = this.runtime;
+    if (store.downstream(task).some((t) => this.runtime.active.has(t.id)))
+      throw Error("下游正在制作，请先中断再修改角色声音");
+    const artifact = store.one<Artifact>(
+      "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY createdAt DESC LIMIT 1",
+      task.id,
+      task.revision,
+    );
+    const bundle = artifact && mediaBundle(artifact.content);
+    if (!bundle || bundle.type !== "assets")
+      throw Error("尚无角色资产方案，请先生成定妆方案");
+    const data = assetPlanSchema.parse(bundle.data);
+    const characters = [
+      ...new Set([
+        ...data.assets.filter((a) => a.kind === "character").map((a) => a.name),
+        ...data.voices.map((v) => v.character),
+      ]),
+    ];
+    const targets = character
+      ? characters.filter((name) => name === character)
+      : characters;
+    if (!targets.length) throw Error("没有可生成试听的角色");
+    const connection = media.connection("speech");
+    let voices =
+      connection.provider === "qwen-tts"
+        ? qwenVoices
+        : Array.isArray(connection.settings?.voices)
+          ? connection.settings.voices.map(String)
+          : [String(connection.settings?.voice || "alloy")];
+    if (connection.provider === "elevenlabs") {
+      const response = await media.request(connection, "/voices", signal);
+      voices =
+        ((await response.json()) as any).voices?.map((v: any) => v.voice_id) ||
+        [];
+    }
+    if (!voices.length) throw Error("语音连接没有可用音色");
+    for (const name of targets) {
+      if (!data.voices.some((v) => v.character === name))
+        data.voices.push({
+          character: name,
+          voice: voices[0],
+          sampleText: `你好，我是${name}。我们准备出发吧。`,
+        });
+    }
+    const selected = data.voices.filter((v) => targets.includes(v.character));
+    let changed = false;
+    this.assertCurrent(task, signal);
+    store.updateTask(task.id, task.revision, "running", "正在生成角色声音试听");
+    try {
+      for (const [index, sample] of selected.entries()) {
+        const chosenVoice = voices.includes(sample.voice)
+          ? sample.voice
+          : voices[0];
+        this.assertCurrent(task, signal);
+        store.event(
+          task.projectId,
+          task.id,
+          "media.voice",
+          `试听 ${index + 1}/${selected.length}：${sample.character} · ${chosenVoice}`,
+        );
+        const audioId = await media.ensure(
+          task.id,
+          task.revision,
+          "speech",
+          sample.sampleText,
+          [],
+          { voice: chosenVoice },
+          signal,
+          undefined,
+          true,
+        );
+        this.assertCurrent(task, signal);
+        sample.audioId = audioId;
+        sample.voice = chosenVoice;
+        if (!changed) {
+          store.db.run(
+            "UPDATE artifacts SET status='superseded' WHERE taskId=? AND revision=? AND status IN ('reviewed','approved')",
+            [task.id, task.revision],
+          );
+          store.invalidateAfter(task);
+          changed = true;
+        }
+        store.publish(
+          task.id,
+          task.revision,
+          JSON.stringify({ type: "assets", data }),
+        );
+      }
+      store.updateTask(
+        task.id,
+        task.revision,
+        "needs_user",
+        "试听已更新，可播放检查；继续执行阶段可交主控重新审核",
+      );
+      store.event(
+        task.projectId,
+        task.id,
+        "media.voice",
+        `已完成 ${selected.length} 个声音试听，定妆图保持不变`,
+      );
+      return { type: "assets", data };
+    } catch (error) {
+      if (store.task(task.id).revision === task.revision)
+        store.updateTask(
+          task.id,
+          task.revision,
+          "needs_user",
+          `试听生成未全部完成，已完成结果保留：${error instanceof Error ? error.message : String(error)}`,
+        );
+      throw error;
+    }
+  }
   assertCurrent(task: Task, signal: AbortSignal) {
     if (
       signal.aborted ||
@@ -341,9 +462,12 @@ export class MediaPipeline {
           `定妆图片已生成并保存；声音试听待配置：请将“语音模型”绑定到支持独立配音的 API 连接后继续。${error instanceof Error ? error.message : String(error)}`,
         );
       }
-      let voices = Array.isArray(voice.settings?.voices)
-        ? (voice.settings!.voices as string[])
-        : [String(voice.settings?.voice || "alloy"), "nova", "onyx"];
+      let voices =
+        voice.provider === "qwen-tts"
+          ? qwenVoices
+          : Array.isArray(voice.settings?.voices)
+            ? (voice.settings!.voices as string[])
+            : [String(voice.settings?.voice || "alloy"), "nova", "onyx"];
       if (voice.provider === "elevenlabs") {
         const data = (await (
           await media.request(voice, "/voices", signal)
