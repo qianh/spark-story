@@ -1,3 +1,4 @@
+import { produceShotPlan } from "./shot-workflow";
 import { z } from "zod";
 import type { Runtime } from "./runtime";
 import type { Task, Artifact, Connection } from "../../packages/domain";
@@ -11,14 +12,11 @@ import {
   structured,
   storyIssues,
   planIssues,
-  episodeLabel,
 } from "../../packages/series";
 import {
   timingManifest,
   validateTextProduction,
-  validateShotTiming,
 } from "../../packages/production";
-import { storyboardSchema } from "../../packages/media";
 
 export async function executeSeries(
   runtime: Runtime,
@@ -225,12 +223,14 @@ export async function executeSeries(
   } else if (task.stage === 8) {
     const script =
       upstream.find((a) => store.task(a.taskId).stage === 2)?.content || "";
-    const timing = timingManifest(script)?.episodes[0];
-    const board = await part(
-      `文字分镜 ${episodeLabel(task.episode || 1)}`,
-      storyboardSchema,
-      `你是分镜 Agent。把本集剧本完整拆为文字镜头，不生成图片。每镜头填写景别机位运镜、动作、起止状态、场景、节拍引用和资产需求。资产需求使用稳定 assetIds，优先复用已有库，新增时使用清楚的角色/地点/道具标识；不要虚构 imageId/audioId/videoId。对白与剧本一致，镜头按节拍顺序排列，同节拍镜头总时长与剧本一致。只返回 JSON {"summary":"本集分镜与新增资产需求说明","shots":[{"id":"SH001","title":"标题","prompt":"完整画面与资产需求","beatId":"剧本节拍ID","sceneId":"剧本地点ID","duration":5,"assetIds":["CHAR001"],"imagePrompt":"静态构图","motionPrompt":"动作","camera":"景别、机位、轴线","startState":"起始状态","endState":"结束状态","dialogue":"实际台词或空字符串","speaker":"角色或空字符串","route":"separate"}]}。route 仅 separate/native/lipsync。\n剧本：${script}\n可复用资产：${JSON.stringify(store.assetLibrary(task.projectId).map((a) => ({ id: a.id, name: a.name, identity: a.identity, state: a.state })))}`,
-      (d) => validateShotTiming(d.shots, rules, timing),
+    const board = await produceShotPlan(
+      runtime,
+      task,
+      attempt,
+      text,
+      master,
+      script,
+      signal,
     );
     content = JSON.stringify({ type: "shot-plan", data: board });
   }
@@ -310,7 +310,7 @@ export async function executeSeries(
         task,
         attempt,
         master,
-        `你是主控。审核 ${task.title} 的整体衔接、事实一致与交付完整性。章节正文已分别审核时，此处核对全剧因果、时间线和伏笔。不能强制统一钩子模板、场景数量或反应比例。失败请定位章节/集/镜头并说明原因；不要建议全剧重写。返回 JSON {"pass":boolean,"feedback":"理由"}。\n用户要求：${task.instruction}\n已确认概要：${outline}\n产物：${context}`,
+        `你是主控。审核 ${task.title} 的整体衔接、事实一致与交付完整性。${task.stage === 8 ? "文字分镜已完成来源约束、逐镜头及补丁相邻衔接审核；本次仅核对全片开始到结束的衔接和交付完整性，不重复逐字段审核。审美建议不阻断；只有明确且可定位的矛盾才退回，并一次列全，不能依据推测增加年龄等设定。" : ""}章节正文已分别审核时，此处核对全剧因果、时间线和伏笔。不能强制统一钩子模板、场景数量或反应比例。失败请定位章节/集/镜头并说明原因；不要建议全剧重写。返回 JSON {"pass":boolean,"feedback":"理由"}。\n用户要求：${task.instruction}\n已确认概要：${outline}\n产物：${context}`,
         signal,
       ),
     ),

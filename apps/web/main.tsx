@@ -481,7 +481,7 @@ function App() {
                       <p>
                         {task.role} <span className="divider">/</span> 修订{" "}
                         {task.revision}
-                        {![1, 2].includes(task.stage) && (
+                        {![1, 2, 8].includes(task.stage) && (
                           <>
                             {" "}
                             <span className="divider">/</span> 返工 {task.round}{" "}
@@ -589,7 +589,7 @@ function App() {
                     progress={board.progress?.find((p) => p.taskId === task.id)}
                     offline={offline}
                   />
-                  {[1, 2].includes(task.stage) && (
+                  {[1, 2, 8].includes(task.stage) && (
                     <SeriesPlanningProgress
                       task={task}
                       checkpoints={board.planningCheckpoints || []}

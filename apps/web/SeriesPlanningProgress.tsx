@@ -1,3 +1,4 @@
+import { storyboardSchema } from "../../packages/media";
 import React from "react";
 import type { Task, Event } from "../../packages/domain";
 import {
@@ -100,10 +101,13 @@ export function SeriesPlanningProgress({
   liveContent: string;
 }) {
   const isScript = task.stage === 2;
-  const label = isScript ? "单集剧本" : "分集规划";
-  const kind = isScript
-    ? `单集剧本 EP${String(task.episode || 1).padStart(3, "0")}`
-    : "全剧分集边界";
+  const isShot = task.stage === 8;
+  const label = isShot ? "文字分镜" : isScript ? "单集剧本" : "分集规划";
+  const kind = isShot
+    ? `文字分镜 EP${String(task.episode || 1).padStart(3, "0")}`
+    : isScript
+      ? `单集剧本 EP${String(task.episode || 1).padStart(3, "0")}`
+      : "全剧分集边界";
   const current = checkpoints.filter(
     (p) =>
       p.taskId === task.id && p.revision === task.revision && p.kind === kind,
@@ -114,7 +118,7 @@ export function SeriesPlanningProgress({
     (p, i) => current.findIndex((other) => other.content === p.content) === i,
   );
   const liveEpisodes =
-    !isScript && task.status === "running"
+    !isShot && !isScript && task.status === "running"
       ? completedEpisodes(liveContent)
       : [];
   const saved =
@@ -150,6 +154,7 @@ export function SeriesPlanningProgress({
             "workflow.part.passed",
             "review.failed",
             "review.passed",
+            "workflow.metrics",
           ].includes(e.type),
       )
     : [];
@@ -157,13 +162,27 @@ export function SeriesPlanningProgress({
     <section className="panel" aria-label={`${label}进度与已保存内容`}>
       <div className="panel-heading">
         <strong>{label}进度</strong>
-        <span>{phase}</span>
+        <span>
+          {isShot && ["running", "reviewing"].includes(task.status)
+            ? events.find(
+                (e) =>
+                  e.taskId === task.id &&
+                  e.type === "workflow.part" &&
+                  e.createdAt >= task.updatedAt,
+              )?.message ||
+              (task.status === "reviewing"
+                ? "审核镜头与衔接中"
+                : "生成或修复镜头中")
+            : phase}
+        </span>
       </div>
       <div className="notice series-planning-status">
         <p>
-          {isScript
-            ? "生成剧本 → 内容与计时审核 → 整体审核 → 你的确认"
-            : "生成方案 → 分集审核 → 整体审核 → 你的确认"}
+          {isShot
+            ? "提取共用约束 → 生成分镜 → 程序检查与审核 → 按镜头修复 → 你的确认"
+            : isScript
+              ? "生成剧本 → 内容与计时审核 → 整体审核 → 你的确认"
+              : "生成方案 → 分集审核 → 整体审核 → 你的确认"}
         </p>
         <p>
           片段尝试{" "}
@@ -228,9 +247,13 @@ export function SeriesPlanningProgress({
               rejected: "未通过，待修改",
             }[p.status] || p.status}
           </summary>
-          <MarkdownContent
-            content={isScript ? scriptText(p.content) : p.content}
-          />
+          {isShot ? (
+            <SavedShots content={p.content} />
+          ) : (
+            <MarkdownContent
+              content={isScript ? scriptText(p.content) : p.content}
+            />
+          )}
         </details>
       ))}
       {liveEpisodes.length > 0 && (
@@ -248,5 +271,38 @@ export function SeriesPlanningProgress({
         </details>
       )}
     </section>
+  );
+}
+
+function SavedShots({ content }: { content: string }) {
+  const board = structured(content, storyboardSchema);
+  if (!board) return <MarkdownContent content={content} />;
+  return (
+    <div className="markdown-content">
+      <p>{board.summary}</p>
+      <p>
+        {board.shots.length} 个镜头 ·{" "}
+        {board.shots.reduce((n, s) => n + s.duration, 0)} 秒
+      </p>
+      {board.shots.map((s) => (
+        <details key={s.id} open>
+          <summary>
+            {s.id} · {s.title} · {s.duration} 秒
+          </summary>
+          <p>{s.prompt}</p>
+          <p>画面：{s.imagePrompt}</p>
+          <p>动作：{s.motionPrompt}</p>
+          <p>机位：{s.camera}</p>
+          <p>起始：{s.startState}</p>
+          <p>结束：{s.endState}</p>
+          <p>资产：{(s.assetIds || []).join("、")}</p>
+          {s.dialogue && (
+            <p>
+              {s.speaker}：{s.dialogue}
+            </p>
+          )}
+        </details>
+      ))}
+    </div>
   );
 }

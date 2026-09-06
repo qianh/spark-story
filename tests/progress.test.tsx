@@ -331,3 +331,47 @@ test("单集剧本流式正文解码换行、引号及 Unicode，并忽略未完
   );
   expect(scriptText("# 普通正文")).toBe("# 普通正文");
 });
+
+test("文字分镜显示已保存镜头、实际尝试和执行耗时", () => {
+  const html = renderToStaticMarkup(
+    <SeriesPlanningProgress
+      task={{ ...task, stage: 8, episode: 1 }}
+      checkpoints={[
+        {
+          taskId: task.id,
+          revision: 1,
+          kind: "文字分镜 EP001",
+          status: "rejected",
+          createdAt: "2026-09-06T12:00:00Z",
+          content: JSON.stringify({
+            summary: "分镜方案",
+            shots: [
+              {
+                id: "SH001",
+                title: "抱起幼女",
+                prompt: "女孩仍在怀中",
+                duration: 5,
+                assetIds: ["girl"],
+              },
+            ],
+          }),
+        },
+      ]}
+      events={[
+        {
+          seq: 3,
+          taskId: task.id,
+          projectId: "p",
+          type: "workflow.metrics",
+          message: "审核耗时 12 秒",
+          createdAt: "2026-09-06T12:01:00Z",
+        },
+      ]}
+      liveContent=""
+    />,
+  );
+  expect(html).toContain("文字分镜进度");
+  expect(html).toContain("片段尝试 2 / 3");
+  expect(html).toContain("抱起幼女");
+  expect(html).toContain("审核耗时 12 秒");
+});
