@@ -471,3 +471,159 @@ test("真实图片与视频导入、预览、下载和单独生成入口", async
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("分集返工展示已保存方案、审核意见和实时进度", async ({
+  page,
+  request,
+}) => {
+  const { planFixture } = await import("../tests/fixtures/series");
+  const p = await (
+    await request.post("/api/projects", {
+      data: {
+        name: "分集进度验证",
+        source: "少女来信",
+        inputType: "idea",
+        aspect: "9:16",
+        template: "cel",
+        budget: 0,
+      },
+    })
+  ).json();
+  const board = await (await request.get("/api/projects/" + p.id)).json();
+  const task = board.tasks.find((t: any) => t.stage === 1);
+  task.status = "running";
+  const now = new Date().toISOString();
+  board.planningCheckpoints = [
+    {
+      taskId: task.id,
+      revision: task.revision,
+      kind: "全剧分集边界",
+      status: "rejected",
+      content: JSON.stringify(planFixture),
+      createdAt: now,
+    },
+  ];
+  board.events = [
+    {
+      seq: 1,
+      taskId: task.id,
+      projectId: p.id,
+      type: "workflow.part.failed",
+      message: "请修正第二集边界",
+      createdAt: now,
+    },
+  ];
+  board.progress = [
+    {
+      taskId: task.id,
+      revision: task.revision,
+      phase: "generate",
+      content:
+        '{"episodes":[' + JSON.stringify(planFixture.episodes[0]) + ',{"id":',
+      status: "running",
+      startedAt: now,
+      heartbeatAt: now,
+      outputAt: now,
+    },
+  ];
+  await page.route("**/api/projects/" + p.id, (route) =>
+    route.fulfill({ json: board }),
+  );
+  await page.addInitScript(
+    (id) => localStorage.setItem("spark-project", id),
+    p.id,
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "进入当前工作区" }).click();
+  const panel = page.getByRole("region", { name: "分集规划进度与已保存内容" });
+  await expect(panel).toContainText("根据反馈返工中");
+  await expect(panel).toContainText("片段尝试 2 / 3");
+  await expect(panel.getByText("真相揭晓", { exact: false })).toBeVisible();
+  await expect(panel).toContainText("请修正第二集边界");
+  await expect(panel).toContainText("本次输出已有 1 集内容完整");
+  await page.screenshot({
+    path: "test-results/series-planning-progress.png",
+    fullPage: true,
+  });
+  task.status = "reviewing";
+  board.progress[0].phase = "review";
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await expect(panel).toContainText("分集方案审核中");
+  await expect(panel.getByText("真相揭晓", { exact: false })).toBeVisible();
+});
+
+test("单集剧本返工保留已生成正文并显示执行进度", async ({ page, request }) => {
+  const { scriptFixture } = await import("../tests/fixtures/series");
+  const p = await (
+    await request.post("/api/projects", {
+      data: {
+        name: "剧本进度验证",
+        source: "少女来信",
+        inputType: "idea",
+        aspect: "9:16",
+        template: "cel",
+        budget: 0,
+      },
+    })
+  ).json();
+  const board = await (await request.get("/api/projects/" + p.id)).json();
+  const task = board.tasks.find((t: any) => t.stage === 2);
+  task.status = "running";
+  const now = new Date().toISOString();
+  board.planningCheckpoints = [
+    {
+      taskId: task.id,
+      revision: task.revision,
+      kind: "单集剧本 EP001",
+      status: "rejected",
+      content: JSON.stringify({ content: scriptFixture(1) }),
+      createdAt: now,
+    },
+  ];
+  board.events = [
+    {
+      seq: 1,
+      taskId: task.id,
+      projectId: p.id,
+      type: "workflow.part.failed",
+      message: "请补充第一集动作",
+      createdAt: now,
+    },
+  ];
+  board.progress = [
+    {
+      taskId: task.id,
+      revision: task.revision,
+      phase: "generate",
+      content: '{"content":"# 实时剧本\\n少女转身',
+      status: "running",
+      startedAt: now,
+      heartbeatAt: now,
+      outputAt: now,
+    },
+  ];
+  await page.route("**/api/projects/" + p.id, (route) =>
+    route.fulfill({ json: board }),
+  );
+  await page.addInitScript(
+    (id) => localStorage.setItem("spark-project", id),
+    p.id,
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "进入当前工作区" }).click();
+  const panel = page.getByRole("region", { name: "单集剧本进度与已保存内容" });
+  await expect(panel).toContainText("根据反馈返工中");
+  await expect(panel).toContainText("片段尝试 2 / 3");
+  await expect(panel.getByText("第 1 集剧本", { exact: false })).toBeVisible();
+  await expect(panel).toContainText("请补充第一集动作");
+  await expect(panel).toContainText("已保存 1 份剧本内容");
+  await page.screenshot({
+    path: "test-results/script-progress.png",
+    fullPage: true,
+  });
+  task.status = "reviewing";
+  board.progress[0].phase = "review";
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await expect(panel).toContainText("剧本内容审核中");
+  await expect(panel.getByText("第 1 集剧本", { exact: false })).toBeVisible();
+});

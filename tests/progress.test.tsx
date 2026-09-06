@@ -7,7 +7,12 @@ import {
   StoryProgress,
   latestCheckpoints,
 } from "../apps/web/TaskActivity";
-import { outlineFixture } from "./fixtures/series";
+import {
+  SeriesPlanningProgress,
+  completedEpisodes,
+  scriptText,
+} from "../apps/web/SeriesPlanningProgress";
+import { planFixture, outlineFixture } from "./fixtures/series";
 import { ProgressTracker } from "../apps/server/progress";
 import { Store } from "../apps/server/store";
 import type { Task, Connection } from "../packages/domain";
@@ -183,4 +188,146 @@ test("进度持久化，结束和旧修订不能继续写，重启保留草稿�
     tracker.finish("completed");
     s.db.close();
   }
+});
+
+test("分集返工期间保留完整候选、审核意见及当前已返回的单集", () => {
+  const content = JSON.stringify(planFixture);
+  const checkpoints = [
+    {
+      taskId: "task",
+      revision: 1,
+      kind: "全剧分集边界",
+      status: "rejected",
+      content,
+      createdAt: "2026-09-06T13:00:00Z",
+    },
+    {
+      taskId: "task",
+      revision: 1,
+      kind: "全剧分集边界",
+      status: "candidate",
+      content,
+      createdAt: "2026-09-06T12:00:00Z",
+    },
+    {
+      taskId: "task",
+      revision: 0,
+      kind: "全剧分集边界",
+      status: "reviewed",
+      content: "旧修订方案",
+    },
+  ];
+  const html = renderToStaticMarkup(
+    <SeriesPlanningProgress
+      task={task}
+      checkpoints={checkpoints}
+      events={[
+        {
+          seq: 1,
+          taskId: "task",
+          projectId: "p",
+          type: "workflow.part.failed",
+          message: "请修正第二集边界",
+          createdAt: "2026-09-06T13:00:01Z",
+        },
+      ]}
+      liveContent={
+        '{"episodes":[' +
+        JSON.stringify(planFixture.episodes[0]) +
+        ',{"id":"EP002"'
+      }
+    />,
+  );
+  expect(html).toContain("根据反馈返工中");
+  expect(html).toContain("片段尝试 2 / 3");
+  expect(html).toContain("请修正第二集边界");
+  expect(html).toContain("真相揭晓");
+  expect(html).toContain("本次输出已有 1 集内容完整");
+  expect(html).not.toContain("旧修订方案");
+  expect(html).not.toContain("此前保存的方案");
+  for (const status of [
+    "reviewing",
+    "provider_blocked",
+    "needs_user",
+    "awaiting_user",
+  ] as const) {
+    const paused = renderToStaticMarkup(
+      <SeriesPlanningProgress
+        task={{ ...task, status }}
+        checkpoints={checkpoints}
+        events={[]}
+        liveContent=""
+      />,
+    );
+    expect(paused).toContain("真相揭晓");
+    expect(paused).not.toContain("本次生成已完整返回");
+  }
+});
+
+test("实时分集只展示完整且有效的对象，支持字符串中的括号和转义", () => {
+  const ep = {
+    ...planFixture.episodes[0],
+    summary: '她说："关门}"，留下了\\记号',
+  };
+  expect(
+    completedEpisodes('{"episodes":[' + JSON.stringify(ep) + ',{"id":'),
+  ).toEqual([ep]);
+  expect(completedEpisodes("模型正在分析，尚无 JSON")).toEqual([]);
+  expect(completedEpisodes('{"episodes":[{"id":"EP001"}')).toEqual([]);
+  expect(completedEpisodes(JSON.stringify(planFixture))).toEqual(
+    planFixture.episodes,
+  );
+});
+
+test("单集剧本返工时可读已保存正文，按当前集和修订展示进度", () => {
+  const html = renderToStaticMarkup(
+    <SeriesPlanningProgress
+      task={{ ...task, stage: 2, episode: 2 }}
+      checkpoints={[
+        {
+          taskId: task.id,
+          revision: 1,
+          kind: "单集剧本 EP002",
+          status: "rejected",
+          content: JSON.stringify({
+            content: "# 第二集已生成正文\n她打开了信封。",
+          }),
+        },
+        {
+          taskId: task.id,
+          revision: 1,
+          kind: "单集剧本 EP001",
+          status: "reviewed",
+          content: "第一集不可混入",
+        },
+        {
+          taskId: task.id,
+          revision: 0,
+          kind: "单集剧本 EP002",
+          status: "reviewed",
+          content: "旧修订不可混入",
+        },
+      ]}
+      events={[]}
+      liveContent=""
+    />,
+  );
+  expect(html).toContain("单集剧本进度");
+  expect(html).toContain("根据反馈返工中");
+  expect(html).toContain("片段尝试 2 / 3");
+  expect(html).toContain("<h1>第二集已生成正文</h1>");
+  expect(html).toContain("她打开了信封。");
+  expect(html).not.toContain("不可混入");
+});
+
+test("单集剧本流式正文解码换行、引号及 Unicode，并忽略未完成转义", () => {
+  expect(scriptText('{"content":"# 场一\\n她说：\\"你好\\"')).toBe(
+    '# 场一\n她说："你好"',
+  );
+  expect(scriptText('{"content":"正文\\u4f60\\u597d\\u12')).toBe("正文你好");
+  expect(scriptText('{"content":"正文\\')).toBe("正文");
+  expect(scriptText(JSON.stringify({ content: "# 完整正文\n结束" }))).toBe(
+    "# 完整正文\n结束",
+  );
+  expect(scriptText("# 普通正文")).toBe("# 普通正文");
 });

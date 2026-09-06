@@ -399,3 +399,14 @@
     animation: none;
   }
 }
+
+.series-planning-status {
+  display: block;
+}
+.series-planning-status p {
+  margin: 0 0 8px;
+}
+.series-planning-status small {
+  display: block;
+  line-height: 1.6;
+}

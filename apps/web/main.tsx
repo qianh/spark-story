@@ -68,11 +68,11 @@ import {
   latestCheckpoints,
 } from "./TaskActivity";
 import "./reading.css";
+import { SeriesPlanningProgress, scriptText } from "./SeriesPlanningProgress";
 import {
   ProductionFields,
   ProductionForm,
   readProduction,
-  InventoryPreview,
 } from "./ProductionForm";
 import {
   productionRulesSchema,
@@ -90,6 +90,7 @@ type Board = {
     kind: string;
     status: string;
     content: string;
+    createdAt?: string;
   }[];
   episodes?: { number: number; id: string; title: string }[];
   tasks: Task[];
@@ -264,8 +265,8 @@ function App() {
       )
     : [];
   const checkpointStatus = (status: string) =>
-    ({ reviewed: "已通过", rejected: "未通过", candidate: "待审核" }[status] ||
-    "待处理");
+    ({ reviewed: "已通过", rejected: "未通过", candidate: "待审核" })[status] ||
+    "待处理";
   const liveProduct =
     structured(liveContent, storySchema) ||
     structured(liveContent, storyOutlineSchema) ||
@@ -479,8 +480,14 @@ function App() {
                       </h1>
                       <p>
                         {task.role} <span className="divider">/</span> 修订{" "}
-                        {task.revision} <span className="divider">/</span> 返工{" "}
-                        {task.round} / 3
+                        {task.revision}
+                        {![1, 2].includes(task.stage) && (
+                          <>
+                            {" "}
+                            <span className="divider">/</span> 返工 {task.round}{" "}
+                            / 3
+                          </>
+                        )}
                       </p>
                     </div>
                     <div className="button-group">
@@ -582,16 +589,12 @@ function App() {
                     progress={board.progress?.find((p) => p.taskId === task.id)}
                     offline={offline}
                   />
-                  {task.stage === 1 && (
-                    <InventoryPreview
-                      content={
-                        board.planningCheckpoints?.find(
-                          (p) =>
-                            p.taskId === task.id &&
-                            p.revision === task.revision &&
-                            p.status === "reviewed",
-                        )?.content
-                      }
+                  {[1, 2].includes(task.stage) && (
+                    <SeriesPlanningProgress
+                      task={task}
+                      checkpoints={board.planningCheckpoints || []}
+                      events={board.events}
+                      liveContent={liveContent}
                     />
                   )}
                   {task.stage === 7 && (
@@ -700,7 +703,11 @@ function App() {
                         <>
                           <LiveDraft
                             key={task.id + ":" + task.revision}
-                            content={liveContent}
+                            content={
+                              task.stage === 2
+                                ? scriptText(liveContent)
+                                : liveContent
+                            }
                           />
                           {task.stage === 7 &&
                             storyCheckpoints[0] &&
