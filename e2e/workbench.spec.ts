@@ -4,6 +4,25 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
+test("顶栏可切换浅色与深色主题，刷新后仍记住选择", async ({ page }) => {
+  await page.goto("/");
+  const root = page.locator("html");
+  await expect(
+    page.getByRole("radiogroup", { name: "外观主题" }),
+  ).toBeVisible();
+  await page.getByRole("radio", { name: "浅色" }).click();
+  await expect(root).toHaveAttribute("data-theme", "light");
+  await expect(root).toHaveAttribute("data-theme-pref", "light");
+  await page.getByRole("radio", { name: "深色" }).click();
+  await expect(root).toHaveAttribute("data-theme", "dark");
+  await page.reload();
+  await expect(root).toHaveAttribute("data-theme", "dark");
+  await expect(root).toHaveAttribute("data-theme-pref", "dark");
+  await expect(page.getByRole("radio", { name: "深色" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+});
 test("制作规则可编辑、非法区间被拒绝、保存后重置规划但保留概要", async ({
   page,
   request,
@@ -26,6 +45,14 @@ test("制作规则可编辑、非法区间被拒绝、保存后重置规划但�
     p.id,
   );
   await page.goto("/");
+  await page.getByRole("button", { name: /画风 ·/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "画风决定角色和场景怎么被画出来。" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: /三维仙侠国漫/ }).click();
+  await expect(
+    page.getByRole("button", { name: /画风 · 三维仙侠国漫/ }),
+  ).toBeVisible();
   await page.getByRole("button", { name: /制作规则 ·/ }).click();
   await expect(page.getByLabel("单集最短（秒）")).toHaveValue("90");
   await expect(page.getByLabel("单集最长（秒）")).toHaveValue("120");
@@ -118,8 +145,12 @@ test("完整故事先确认，拆集后可选择各集，每个确认点独立�
     const board = await (await request.get("/api/projects/" + p.id)).json();
     expect(board.tasks[index + 1].status).toBe("blocked");
     if (index === 2) {
-      await expect(page.locator(".markdown-content")).toContainText("粗估");
-      await expect(page.locator(".markdown-content")).toContainText("EP002");
+      await expect(
+        page.locator(".artifact-panel .markdown-content"),
+      ).toContainText("粗估");
+      await expect(
+        page.locator(".artifact-panel .markdown-content"),
+      ).toContainText("EP002");
       const bad = await request.post(
         "/api/tasks/" +
           board.tasks.find((t: any) => t.stage === 2).id +
@@ -153,7 +184,9 @@ test("完整故事先确认，拆集后可选择各集，每个确认点独立�
   await expect(page.getByRole("button", { name: "确认此版本" })).toBeVisible({
     timeout: 10000,
   });
-  await expect(page.locator(".markdown-content")).toContainText("EP002");
+  await expect(page.locator(".artifact-panel .markdown-content")).toContainText(
+    "EP002",
+  );
   await page.getByRole("button", { name: "返回阶段看板" }).click();
   await page.setViewportSize({ width: 390, height: 844 });
   expect(
@@ -461,7 +494,102 @@ test("真实图片与视频导入、预览、下载和单独生成入口", async
       path: "test-results/media-workspace.png",
       fullPage: true,
     });
+    await page.getByRole("button", { name: "返回阶段看板" }).click();
+    const assetTask = board.tasks.find((t: { stage: number }) => t.stage === 3);
+    expect(assetTask).toBeTruthy();
+    assetTask.status = "running";
+    assetTask.episode = 1;
+    const mediaBoard = await (
+      await request.get("/api/projects/" + project.id)
+    ).json();
+    const uploaded = mediaBoard.mediaFiles.find(
+      (f: { name: string }) => f.name === "验证定妆.png",
+    );
+    mediaBoard.tasks.find((t: { id: string }) => t.id === assetTask.id).status =
+      "running";
+    mediaBoard.artifacts = [
+      {
+        id: "live-assets",
+        taskId: assetTask.id,
+        revision: assetTask.revision,
+        status: "candidate",
+        createdAt: new Date().toISOString(),
+        content: JSON.stringify({
+          type: "assets",
+          data: {
+            summary: "正在生成定妆",
+            assets: [
+              {
+                id: "hero",
+                name: "林小雨",
+                kind: "character",
+                prompt: "青衫少女",
+                imageId: uploaded.id,
+              },
+              {
+                id: "alley",
+                name: "雨巷",
+                kind: "scene",
+                prompt: "青石巷",
+              },
+            ],
+            voices: [],
+          },
+        }),
+      },
+    ];
+    mediaBoard.mediaJobs = [
+      {
+        id: "job-alley",
+        projectId: project.id,
+        taskId: assetTask.id,
+        revision: assetTask.revision,
+        kind: "image",
+        agent: "角色与关键帧 Agent",
+        prompt: "雨巷夜色",
+        inputs: "[]",
+        options: "{}",
+        connection: "{}",
+        status: "polling",
+        remoteId: "remote-1",
+        outputId: "",
+        error: "",
+        costId: "",
+        operationKey: "",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ];
+    await page.unroute("**/api/projects/" + project.id).catch(() => {});
+    await page.route("**/api/projects/" + project.id, (route) =>
+      route.fulfill({ json: mediaBoard }),
+    );
+    await page.goto("/");
+    await page.getByRole("button", { name: "进入当前工作区" }).click();
+    const previewProgress = page.getByLabel("产物生成进度");
+    await expect(previewProgress).toBeVisible();
+    await expect(previewProgress).toContainText("1 / 2");
+    await expect(previewProgress).toContainText("供应商生成中");
+    await expect(page.getByAltText("验证定妆.png")).toBeVisible();
+    await expect(page.getByText("雨巷", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "重新生成" })).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "生成此图" })).toHaveCount(1);
+    await expect(page.getByText("等待实际产物")).toBeVisible();
+    await expect(page.getByText("产物将在这里呈现")).toHaveCount(0);
+    await page.screenshot({
+      path: "test-results/media-preview-progress.png",
+      fullPage: true,
+    });
+    await page.getByRole("radio", { name: "深色" }).click();
+    await page.screenshot({
+      path: "test-results/media-preview-progress-dark.png",
+      fullPage: true,
+    });
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({
+      path: "test-results/media-preview-progress-mobile.png",
+      fullPage: true,
+    });
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,

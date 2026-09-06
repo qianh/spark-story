@@ -2,6 +2,7 @@ import {
   stageOrder,
   globalStages,
   episodeStages,
+  isMediaStage,
   rank,
   storySchema,
   seriesPlanSchema,
@@ -27,6 +28,7 @@ import {
 } from "../../packages/production";
 import {
   stages,
+  templates,
   type Project,
   type Task,
   type Connection,
@@ -179,6 +181,52 @@ export class Store {
         `制作规则已更新：${production.minSeconds}～${production.maxSeconds} 秒。概要与历史产物保留；分集规划及下游需重新生成和确认。`,
       );
       return production;
+    })();
+  }
+  setVisualTemplate(projectId: string, templateId: string) {
+    const style = templates.find((t) => t.id === templateId);
+    if (!style) throw Error("未知视觉模板");
+    this.project(projectId);
+    return this.db.transaction(() => {
+      if (this.project(projectId).template === templateId) return style;
+      if (
+        this.one(
+          "SELECT id FROM tasks WHERE projectId=? AND status IN ('running','reviewing','coordinating')",
+          projectId,
+        )
+      )
+        throw Error("项目仍在执行，请先中断任务再修改画风");
+      if (
+        this.one(
+          "SELECT id FROM media_jobs WHERE projectId=? AND status IN ('submitting','polling','downloading')",
+          projectId,
+        )
+      )
+        throw Error("媒体任务仍在执行，请先停止或等待完成");
+      this.db.run("UPDATE projects SET template=? WHERE id=?", [
+        templateId,
+        projectId,
+      ]);
+      for (const t of this.tasks(projectId).filter((t) =>
+        isMediaStage(t.stage),
+      )) {
+        this.db.run(
+          "UPDATE tasks SET revision=revision+1,round=0,error='',updatedAt=? WHERE id=?",
+          [now(), t.id],
+        );
+        const current = this.task(t.id);
+        this.db.run("UPDATE tasks SET status=? WHERE id=?", [
+          this.canRun(current) ? "ready" : "blocked",
+          t.id,
+        ]);
+      }
+      this.event(
+        projectId,
+        "",
+        "visual.template",
+        `画风已改为「${style.name}」。已有定妆图保留为旧版本；重新执行定妆后按新画风生成，不复刻任何现有动画角色。`,
+      );
+      return style;
     })();
   }
   task(id: string) {

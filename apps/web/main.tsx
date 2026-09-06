@@ -46,6 +46,7 @@ import {
   WandSparkles,
   X,
 } from "lucide-react";
+import { ThemeSwitch } from "./theme";
 import {
   roles,
   stages,
@@ -58,8 +59,18 @@ import {
 } from "../../packages/domain";
 import "./style.css";
 import "./media.css";
-import { BundleView, MediaJobs, MediaLibrary } from "./MediaStudio";
-import type { MediaFile, MediaJob } from "../../packages/media";
+import {
+  BundleView,
+  MediaJobs,
+  MediaLibrary,
+  MediaGenerationProgress,
+} from "./MediaStudio";
+import {
+  mediaBundle,
+  mediaGenerationProgress,
+  type MediaFile,
+  type MediaJob,
+} from "../../packages/media";
 import type { TaskProgress } from "../../packages/progress";
 import {
   TaskActivity,
@@ -211,7 +222,7 @@ function App() {
       }
     };
     void load();
-    const timer = setInterval(load, 2000);
+    const timer = setInterval(load, 1000);
     return () => {
       alive = false;
       clearInterval(timer);
@@ -271,6 +282,20 @@ function App() {
     structured(liveContent, storySchema) ||
     structured(liveContent, storyOutlineSchema) ||
     structured(liveContent, chapterSchema);
+  const mediaRunning =
+    !!task &&
+    isMediaStage(task.stage) &&
+    ["running", "reviewing", "coordinating"].includes(task.status);
+  const mediaProgress =
+    task && isMediaStage(task.stage)
+      ? mediaGenerationProgress({
+          bundle: artifact ? mediaBundle(artifact.content) : null,
+          jobs: (board?.mediaJobs || []).filter(
+            (j) => j.taskId === task.id && j.revision === task.revision,
+          ),
+          running: mediaRunning,
+        })
+      : null;
   const activeTask =
     visibleTasks.find((t) =>
       ["running", "reviewing", "coordinating"].includes(t.status),
@@ -424,6 +449,7 @@ function App() {
           </div>
           <div className="top-actions">
             <span className="version-label">LOCAL / v0.3</span>
+            <ThemeSwitch />
             <button
               className="icon-button"
               aria-label="刷新"
@@ -481,6 +507,18 @@ function App() {
                       <p>
                         {task.role} <span className="divider">/</span> 修订{" "}
                         {task.revision}
+                        {isMediaStage(task.stage) && (
+                          <>
+                            {" "}
+                            <span className="divider">/</span>{" "}
+                            <button
+                              className="text-button"
+                              onClick={() => setModal("style")}
+                            >
+                              画风 · {currentTemplate?.name}
+                            </button>
+                          </>
+                        )}
                         {![1, 2, 8].includes(task.stage) && (
                           <>
                             {" "}
@@ -675,6 +713,13 @@ function App() {
                           )}
                         </div>
                       </div>
+                      {mediaProgress &&
+                        mediaProgress.phase !== "idle" &&
+                        !editing &&
+                        (mediaRunning ||
+                          mediaProgress.phase === "generating") && (
+                          <MediaGenerationProgress progress={mediaProgress} />
+                        )}
                       {editing ? (
                         <div className="editor-wrap">
                           <textarea
@@ -729,12 +774,25 @@ function App() {
                           production={board.production}
                           content={artifact.content}
                           files={board.mediaFiles || []}
-                          busy={busy}
+                          busy={
+                            busy ||
+                            ["running", "reviewing", "coordinating"].includes(
+                              task.status,
+                            )
+                          }
                           onSave={(content) =>
                             act(() =>
                               api(`/tasks/${task.id}/edit`, {
                                 revision: task.revision,
                                 content,
+                              }),
+                            )
+                          }
+                          onRetryAsset={(assetId) =>
+                            act(() =>
+                              api(`/tasks/${task.id}/retry-asset`, {
+                                revision: task.revision,
+                                assetId,
                               }),
                             )
                           }
@@ -751,8 +809,16 @@ function App() {
                       ) : (
                         <Empty
                           icon={FileText}
-                          title="产物将在这里呈现"
-                          description="开始任务后，Agent 的实际输出会保存为独立版本。"
+                          title={
+                            mediaRunning
+                              ? "产物生成后会出现在这里"
+                              : "产物将在这里呈现"
+                          }
+                          description={
+                            mediaRunning
+                              ? "方案确定后，生成完成的图片、声音和视频会立即显示，无需刷新。"
+                              : "开始任务后，Agent 的实际输出会保存为独立版本。"
+                          }
                         />
                       )}
                       {task.status === "awaiting_user" &&
@@ -1073,17 +1139,23 @@ function App() {
                     <div>
                       <p className="eyebrow">VISUAL DIRECTION</p>
                       <h1>先选择故事的视觉语言。</h1>
-                      <p>六套风格起点，为角色、场景和镜头建立一致的表达。</p>
+                      <p>
+                        内置风格起点，为角色、场景和镜头建立一致的表达。可应用到当前作品，定妆会按新画风重做。
+                      </p>
                     </div>
-                    <span className="tag">6 个内置模板</span>
+                    <span className="tag">{templates.length} 个内置模板</span>
                   </div>
                   <div className="template-grid">
                     {templates.map((t, i) => (
                       <button
-                        className="template-card"
+                        className={
+                          "template-card" +
+                          (t.id === board?.project.template ? " selected" : "")
+                        }
                         key={t.id}
                         onClick={() => {
-                          setModal("new:" + t.id);
+                          if (!board) setModal("new:" + t.id);
+                          else setModal("style");
                         }}
                       >
                         <StyleArt index={i} color={t.color} />
@@ -1346,7 +1418,12 @@ function App() {
                         <span className="project-badge">制作中</span>
                       </h1>
                       <p>
-                        {currentTemplate?.name}
+                        <button
+                          className="text-button"
+                          onClick={() => setModal("style")}
+                        >
+                          画风 · {currentTemplate?.name}
+                        </button>
                         <span className="divider">/</span>
                         {board.project.aspect} 画幅
                         <span className="divider">/</span>第 {episode} 集制作
@@ -1462,32 +1539,30 @@ function App() {
                       <span className="tiny-dot" /> 所有改动自动保存
                     </span>
                   </div>
-                  <div className="notice">
-                    <label>
-                      制作集数：{" "}
-                      <select
-                        aria-label="制作集数"
-                        value={episode}
-                        onChange={(e) => {
-                          setSelectedEpisode(Number(e.target.value));
-                          setWorkspace("");
-                        }}
-                      >
-                        {board.episodes?.length ? (
-                          board.episodes.map((ep) => (
-                            <option key={ep.number} value={ep.number}>
-                              {ep.id} · {ep.title}
-                            </option>
-                          ))
-                        ) : (
-                          <option value={1}>分集确认后可选择</option>
-                        )}
-                      </select>
-                    </label>
-                    <span>
-                      {" "}
+                  <div className="episode-bar">
+                    <label htmlFor="episode-select">制作集数</label>
+                    <select
+                      id="episode-select"
+                      aria-label="制作集数"
+                      value={episode}
+                      onChange={(e) => {
+                        setSelectedEpisode(Number(e.target.value));
+                        setWorkspace("");
+                      }}
+                    >
+                      {board.episodes?.length ? (
+                        board.episodes.map((ep) => (
+                          <option key={ep.number} value={ep.number}>
+                            {ep.id} · {ep.title}
+                          </option>
+                        ))
+                      ) : (
+                        <option value={1}>分集确认后可选择</option>
+                      )}
+                    </select>
+                    <p>
                       全剧故事先确认；本集各阶段单独审核，已确认资产跨集复用。
-                    </span>
+                    </p>
                   </div>
                   <div className="stage-strip">
                     {stageOrder.map((i) => (
@@ -1774,6 +1849,17 @@ function App() {
                   <Plus size={16} /> 创建新项目
                 </button>
               </>
+            ) : modal === "style" && board ? (
+              <StyleForm
+                current={board.project.template}
+                busy={busy}
+                onSubmit={(template) =>
+                  act(async () => {
+                    await api(`/projects/${projectId}`, { template }, "PATCH");
+                    setModal("");
+                  })
+                }
+              />
             ) : modal === "production" && board ? (
               <ProductionForm
                 value={board.production || productionRulesSchema.parse({})}
@@ -2233,7 +2319,7 @@ function ConnectionForm({
         </>
       )}
       <label>
-        模型 ID {transport === "cli" ? "（可留空）" : ""}
+        模型 ID {transport === "cli" ? "（CLI 调度模型，可留空）" : ""}
         <input
           name="model"
           defaultValue={initial?.model}
@@ -2243,7 +2329,7 @@ function ConnectionForm({
           }
         />
       </label>
-      {transport === "api" && (
+      {(transport === "api" || provider === "grok-build") && (
         <>
           <label>
             高级参数（JSON，可留空）
@@ -2269,10 +2355,57 @@ function ConnectionForm({
           {settingsError && <p className="job-error">{settingsError}</p>}
         </>
       )}
+      {provider === "grok-build" && (
+        <p className="muted">
+          Grok Build 可绑定图片和视频模型，使用本机登录的 Imagine 工具；上方模型
+          ID 是 CLI 调度模型，不是 Imagine
+          模型。图片支持生成和参考图编辑，视频使用首帧动画化（6/10
+          秒，480p/720p），长镜头由制作流程拆段。需账号具有媒体权限，CLI
+          用量以供应商为准。
+        </p>
+      )}
+      <p className="muted">
+        图片提示词写主体、身份状态、构图与光线；视频写动作方向、机位运动与结束状态。系统按渠道适配，保留原始要求。高级参数
+        promptGuidance 可补充当前模型要求；不会自动翻译或改写台词。API
+        协议兼容不代表全部模型能力相同。
+      </p>
       <button className="button primary full" disabled={busy}>
         保存连接 <ArrowRight size={15} />
       </button>
     </form>
+  );
+}
+function StyleForm({
+  current,
+  busy,
+  onSubmit,
+}: {
+  current: string;
+  busy: boolean;
+  onSubmit: (id: string) => void;
+}) {
+  return (
+    <>
+      <p className="eyebrow">VISUAL DIRECTION</p>
+      <h2>画风决定角色和场景怎么被画出来。</h2>
+      <p>
+        切换后会重做定妆及之后的画面，剧本和文字分镜保留。旧图作为历史版本保留。这是制作语言，不能复刻某部现有动画的角色或场景。
+      </p>
+      <div className="style-picker">
+        {templates.map((t) => (
+          <button
+            key={t.id}
+            className={"style-option" + (t.id === current ? " selected" : "")}
+            disabled={busy || t.id === current}
+            onClick={() => onSubmit(t.id)}
+          >
+            <strong>{t.name}</strong>
+            <small>{t.en}</small>
+            <p>{t.description}</p>
+          </button>
+        ))}
+      </div>
+    </>
   );
 }
 function BudgetForm({

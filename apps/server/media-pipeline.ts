@@ -1,3 +1,4 @@
+import { mediaProfile } from "../../packages/media-profiles";
 import type { Runtime } from "./runtime";
 import { parseResult } from "./connectors";
 import {
@@ -173,6 +174,50 @@ export class MediaPipeline {
       ]);
     }
   }
+  async retryAsset(task: Task, assetId: string, signal: AbortSignal) {
+    if (task.stage !== 3) throw Error("仅定妆资产支持单张重新生成");
+    if (["running", "reviewing", "coordinating"].includes(task.status))
+      throw Error("任务正在执行，请先中断再重试单张定妆");
+    const { store, media } = this.runtime;
+    const artifact = store.one<Artifact>(
+      "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY createdAt DESC LIMIT 1",
+      task.id,
+      task.revision,
+    );
+    if (!artifact) throw Error("还没有可重试的定妆产物");
+    const bundle = mediaBundle(artifact.content);
+    const data = assetPlanSchema.parse(bundle?.data);
+    const asset = data.assets.find((a) => a.id === assetId);
+    if (!asset) throw Error("资产不存在");
+    const p = store.project(task.projectId);
+    const style = templates.find((t) => t.id === p.template)!;
+    const library = store.assetLibrary(task.projectId);
+    const base = asset.baseLibraryId
+      ? library.find((a) => a.libraryId === asset.baseLibraryId)
+      : undefined;
+    this.assertCurrent(task, signal);
+    asset.imageId = await media.ensure(
+      task.id,
+      task.revision,
+      "image",
+      `${style.prompt}。${asset.prompt}。固定身份：${asset.identity}。当前状态：${asset.state}`,
+      base?.imageId ? [base.imageId] : [],
+      { aspect: p.aspect },
+      signal,
+      undefined,
+      true,
+    );
+    delete asset.libraryId;
+    const next = { type: "assets" as const, data };
+    store.publish(task.id, task.revision, JSON.stringify(next, null, 2));
+    store.event(
+      task.projectId,
+      task.id,
+      "media.retry",
+      `${asset.name} 已按当前画风重新生成，旧图保留在素材库。`,
+    );
+    return next;
+  }
   assertCurrent(task: Task, signal: AbortSignal) {
     if (
       signal.aborted ||
@@ -240,30 +285,19 @@ export class MediaPipeline {
       });
     if (task.stage === 3) {
       media.connection("image");
-      const voice = media.connection("speech");
-      let voices = Array.isArray(voice.settings?.voices)
-        ? (voice.settings!.voices as string[])
-        : [String(voice.settings?.voice || "alloy"), "nova", "onyx"];
-      if (voice.provider === "elevenlabs") {
-        const data = (await (
-          await media.request(voice, "/voices", signal)
-        ).json()) as any;
-        voices = (data.voices || []).map((v: any) => v.voice_id);
-        if (!voices.length) throw Error("语音供应商未返回可用声音");
-      }
       const library = store.assetLibrary(task.projectId);
-      const approvedVoices = store.approvedVoices(task.projectId, voice.id);
       const data: AssetPlan = assetPlanSchema.parse(
         edited?.type === "assets"
           ? edited.data
           : await ask(
-              `你是角色与资产 Agent。提取本集实际需要的角色、场景、道具，生成定妆提示词；角色图是单角色，不把多人拼在同一图。为每个角色提供 2 个不同声音的试听候选（不足则 1 个），从可用 voice ID ${JSON.stringify(voices.slice(0, 30))} 选择。返回 JSON：{"summary":"说明","assets":[{"id":"稳定ID","name":"名字","kind":"character或scene或prop","prompt":"完整图像生成要求"}],"voices":[{"character":"角色名字","voice":"可用ID","sampleText":"该角色一句适合试听的台词"}]}。从文字分镜 assetIds 提取全部需求并保持 ID 一致。已有资产可通过 libraryId 引用，必须选择外观与状态都匹配的版本；新增状态创建独立资产，并用 baseLibraryId 指定基础参考版本，不覆盖旧版。每项填写 identity 与 state。不要虚构 imageId、audioId。可复用库：${JSON.stringify(library)}。`,
+              `你是角色与资产 Agent。提取本集实际需要的角色、场景、道具，生成定妆提示词；角色图是单角色，不把多人拼在同一图。画风必须遵守：${style.prompt}。prompt 里写身份、服饰、姿态和场景，不要改写成二维插画、水墨、赛璐璐或Q版，也不要写成任何现有动画角色的翻版。本次只规划图像资产，voices 返回空数组；声音试听会在图像完成后独立规划。返回 JSON：{"summary":"说明","assets":[{"id":"稳定ID","name":"名字","kind":"character或scene或prop","prompt":"完整图像生成要求"}],"voices":[{"character":"角色名字","voice":"可用ID","sampleText":"该角色一句适合试听的台词"}]}。从文字分镜 assetIds 提取全部需求并保持 ID 一致。已有资产可通过 libraryId 引用，必须选择外观与状态都匹配的版本；新增状态创建独立资产，并用 baseLibraryId 指定基础参考版本，不覆盖旧版。每项填写 identity 与 state。不要虚构 imageId、audioId。可复用库：${JSON.stringify(library)}。`,
             ),
       );
       const shotPlan = bundleAt("shot-plan");
       for (const id of shotPlan?.shots.flatMap((s: any) => s.assetIds) || [])
         if (!data.assets.some((a) => a.id === id))
           throw Error(`制作验收：文字分镜需要的资产 ${id} 未提供`);
+      saveProgress("assets", data);
       for (const asset of data.assets) {
         const base = asset.baseLibraryId
           ? library.find((a) => a.libraryId === asset.baseLibraryId)
@@ -292,6 +326,38 @@ export class MediaPipeline {
             { aspect: p.aspect },
             signal,
           );
+        saveProgress("assets", data);
+      }
+      if (
+        !data.assets.some((asset) => asset.kind === "character") &&
+        !data.voices.length
+      )
+        return { type: "assets", data };
+      let voice: Connection;
+      try {
+        voice = media.connection("speech");
+      } catch (error) {
+        throw Error(
+          `定妆图片已生成并保存；声音试听待配置：请将“语音模型”绑定到支持独立配音的 API 连接后继续。${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      let voices = Array.isArray(voice.settings?.voices)
+        ? (voice.settings!.voices as string[])
+        : [String(voice.settings?.voice || "alloy"), "nova", "onyx"];
+      if (voice.provider === "elevenlabs") {
+        const data = (await (
+          await media.request(voice, "/voices", signal)
+        ).json()) as any;
+        voices = (data.voices || []).map((v: any) => v.voice_id);
+        if (!voices.length) throw Error("语音供应商未返回可用声音");
+      }
+      const approvedVoices = store.approvedVoices(task.projectId, voice.id);
+      if (!data.voices.length) {
+        const plan = await ask(
+          `你是配音 Agent。为以下角色各提供 2 个不同声音的试听候选（不足则 1 个），仅从可用 voice ID ${JSON.stringify(voices.slice(0, 30))} 中选择。返回 JSON {"voices":[{"character":"角色名字","voice":"可用ID","sampleText":"该角色一句适合试听的台词"}]}。角色：${JSON.stringify(data.assets.filter((asset) => asset.kind === "character"))}`,
+        );
+        data.voices = assetPlanSchema.pick({ voices: true }).parse(plan).voices;
+        if (!data.voices.length) throw Error("制作验收：角色声音试听方案为空");
         saveProgress("assets", data);
       }
       const selectedCharacters = new Set<string>();
@@ -345,6 +411,7 @@ export class MediaPipeline {
           shot.draftImage = false;
         }
       }
+      saveProgress("storyboard", data);
       for (const shot of data.shots) {
         this.assertCurrent(task, signal);
         const refs = shot.assetIds.map((id) => {
@@ -402,6 +469,7 @@ export class MediaPipeline {
         edited?.type === "production" ? edited.data : bundleAt("storyboard"),
       );
       checkShots(data.shots);
+      saveProgress("production", data);
       const video = media.connection("video");
       for (const shot of data.shots) {
         this.assertCurrent(task, signal);
@@ -479,9 +547,7 @@ export class MediaPipeline {
             `镜头 ${shot.title} 选择了原生音画，但视频连接未声明此能力。请调整路线或连接。`,
           );
         if (shot.route === "lipsync") media.connection("lipsync");
-        const max = Number(
-          video.settings?.maxDuration || (video.provider === "xai" ? 15 : 12),
-        );
+        const max = Number(mediaProfile(video, "video").maxDuration);
         if (!Number.isFinite(max) || max < 1 || max > 600)
           throw Error("视频连接 maxDuration 需要在 1 到 600 秒之间");
         if (shot.duration > max && shot.route === "native") {
@@ -576,6 +642,7 @@ export class MediaPipeline {
           },
     );
     checkShots(data.shots);
+    saveProgress("timeline", data);
     if (
       data.shots.some(
         (s) => !s.videoId || (s.dialogue && !s.audioId && s.route !== "native"),

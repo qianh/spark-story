@@ -128,3 +128,105 @@ export function mediaBundle(content: string): any | null {
     return null;
   }
 }
+export type MediaProgressItem = {
+  id: string;
+  name: string;
+  kind: string;
+  fileId?: string;
+};
+export function plannedMediaItems(
+  bundle?: { type: string; data: any } | null,
+): MediaProgressItem[] {
+  if (!bundle?.data) return [];
+  const data = bundle.data;
+  if (bundle.type === "assets")
+    return [
+      ...(data.assets || []).map((a: any) => ({
+        id: String(a.id),
+        name: String(a.name || a.id),
+        kind: "image",
+        fileId: a.imageId,
+      })),
+      ...(data.voices || []).map((v: any, i: number) => ({
+        id: `voice-${v.character}-${i}`,
+        name: `${v.character} 试听`,
+        kind: "audio",
+        fileId: v.audioId,
+      })),
+    ];
+  const items: MediaProgressItem[] = (data.shots || []).flatMap((s: any) => {
+    const row: MediaProgressItem[] = [
+      {
+        id: String(s.id),
+        name: String(s.title || s.id),
+        kind: s.videoId ? "video" : "image",
+        fileId: s.videoId || s.imageId,
+      },
+    ];
+    if (s.dialogue && s.route !== "native")
+      row.push({
+        id: `${s.id}-audio`,
+        name: `${s.title || s.id} 配音`,
+        kind: "audio",
+        fileId: s.audioId,
+      });
+    return row;
+  });
+  if (bundle.type === "storyboard")
+    items.push({
+      id: "preview",
+      name: "动态预览",
+      kind: "video",
+      fileId: data.previewId,
+    });
+  if (bundle.type === "timeline") {
+    if (data.musicPrompt || data.musicId)
+      items.push({
+        id: "music",
+        name: "配乐",
+        kind: "audio",
+        fileId: data.musicId,
+      });
+    if (data.soundPrompt || data.soundId)
+      items.push({
+        id: "sound",
+        name: "音效",
+        kind: "audio",
+        fileId: data.soundId,
+      });
+    items.push({
+      id: "export",
+      name: "成片",
+      kind: "video",
+      fileId: data.exportId,
+    });
+  }
+  return items;
+}
+export function mediaGenerationProgress({
+  bundle,
+  jobs,
+  running,
+}: {
+  bundle?: { type: string; data: any } | null;
+  jobs: MediaJob[];
+  running: boolean;
+}) {
+  const items = plannedMediaItems(bundle);
+  const done = items.filter((i) => i.fileId).length;
+  const current = jobs.find((j) =>
+    ["queued", "submitting", "polling", "downloading"].includes(j.status),
+  );
+  const phase = !items.length
+    ? running
+      ? "planning"
+      : "idle"
+    : done < items.length || current
+      ? "generating"
+      : "complete";
+  const label =
+    phase === "planning"
+      ? "正在规划需要生成的产物"
+      : `产物 ${done} / ${items.length} 已呈现`;
+  return { phase, items, done, total: items.length, current, label };
+}

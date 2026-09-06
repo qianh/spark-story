@@ -195,6 +195,88 @@ test("图像真实保存、视频异步查询、完成结果复用不重复收�
   expect(jobs.every((j) => j.status === "completed")).toBe(true);
   expect(jobs.find((j) => j.kind === "video")?.remoteId).toBeTruthy();
 }, 20000);
+test("强制重试跳过完成缓存，只替换一张定妆图", async () => {
+  const f = await fixture(),
+    media = new MediaService(f.store, f.root),
+    t = f.store.one<Task>(
+      "SELECT * FROM tasks WHERE projectId=? AND stage=3",
+      f.project.id,
+    )!;
+  f.store.updateTask(t.id, 1, "provider_blocked", "声音待配置");
+  const signal = new AbortController().signal;
+  const first = await media.ensure(t.id, 1, "image", "定妆", [], {}, signal);
+  const again = await media.ensure(t.id, 1, "image", "定妆", [], {}, signal);
+  expect(again).toBe(first);
+  const forced = await media.ensure(
+    t.id,
+    1,
+    "image",
+    "定妆",
+    [],
+    {},
+    signal,
+    undefined,
+    true,
+  );
+  expect(forced).not.toBe(first);
+  expect(f.counts().submissions).toBe(2);
+  const other = await media.ensure(t.id, 1, "image", "雨巷", [], {}, signal);
+  f.store.publish(
+    t.id,
+    1,
+    JSON.stringify({
+      type: "assets",
+      data: {
+        summary: "定妆",
+        assets: [
+          {
+            id: "hero",
+            name: "沈不言",
+            kind: "character",
+            prompt: "定妆",
+            imageId: first,
+          },
+          {
+            id: "alley",
+            name: "雨巷",
+            kind: "scene",
+            prompt: "雨巷",
+            imageId: other,
+          },
+        ],
+        voices: [],
+      },
+    }),
+  );
+  const { MediaPipeline } = await import("../apps/server/media-pipeline");
+  const pipeline = new MediaPipeline({
+    store: f.store,
+    media,
+  } as unknown as Runtime);
+  const result = await pipeline.retryAsset(
+    f.store.task(t.id),
+    "hero",
+    new AbortController().signal,
+  );
+  expect(result.data.assets[0].imageId).not.toBe(first);
+  expect(result.data.assets[1].imageId).toBe(other);
+  expect(
+    f.store.one<Artifact>(
+      "SELECT * FROM artifacts WHERE taskId=? ORDER BY createdAt DESC LIMIT 1",
+      t.id,
+    )?.content,
+  ).toContain(result.data.assets[0].imageId);
+  expect(f.store.task(t.id).status).toBe("provider_blocked");
+  expect(f.store.task(t.id).revision).toBe(1);
+  f.store.updateTask(t.id, 1, "running");
+  await expect(
+    pipeline.retryAsset(
+      f.store.task(t.id),
+      "hero",
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("中断");
+}, 20000);
 test("中断后的外部视频只查询原任务，不重复提交", async () => {
   const f = await fixture(),
     media = new MediaService(f.store, f.root),
@@ -504,4 +586,132 @@ test("动态分镜应用用户和审核反馈，清除旧媒体引用；无反�
   }
   expect(prompts).toHaveLength(2);
   expect(plan.shots[0].title).toBe("原镜头");
+});
+
+test("定妆方案解析后立刻写入预览检查点，不等待第一张图", async () => {
+  const f = await fixture();
+  const { MediaPipeline } = await import("../apps/server/media-pipeline");
+  const task = f.store.tasks(f.project.id).find((t) => t.stage === 3)!;
+  const checkpoints: any[] = [];
+  let images = 0;
+  const pipeline = new MediaPipeline({
+    store: f.store,
+    call: async (
+      _task: Task,
+      _attempt: string,
+      _c: Connection,
+      prompt: string,
+    ) =>
+      prompt.includes("配音")
+        ? JSON.stringify({
+            voices: [{ character: "主角", voice: "alloy", sampleText: "你好" }],
+          })
+        : JSON.stringify({
+            summary: "定妆",
+            assets: [
+              { id: "hero", name: "主角", kind: "character", prompt: "主角" },
+              { id: "alley", name: "雨巷", kind: "scene", prompt: "雨巷" },
+            ],
+            voices: [],
+          }),
+    media: {
+      connection: () => f.c,
+      ensure: async (_id: string, _revision: number, kind: string) => {
+        if (kind === "image") {
+          expect(checkpoints.length).toBeGreaterThan(0);
+          expect(checkpoints[0].data.assets.every((a: any) => !a.imageId)).toBe(
+            true,
+          );
+          return "img-" + ++images;
+        }
+        return "audio-1";
+      },
+    },
+  } as unknown as Runtime);
+  const result = await pipeline.produce(
+    task,
+    "test",
+    f.c,
+    [],
+    "",
+    null,
+    new AbortController().signal,
+    (type, data) => checkpoints.push(structuredClone({ type, data })),
+  );
+  expect(checkpoints[0]).toMatchObject({
+    type: "assets",
+    data: {
+      assets: [{ id: "hero" }, { id: "alley" }],
+    },
+  });
+  expect(checkpoints[0].data.assets.every((a: any) => !a.imageId)).toBe(true);
+  expect("assets" in result.data).toBe(true);
+  expect(
+    "assets" in result.data && result.data.assets.map((a) => a.imageId),
+  ).toEqual(["img-1", "img-2"]);
+  expect(images).toBe(2);
+});
+
+test("语音连接缺失时先保存定妆图，补齐连接后复用图片继续试听", async () => {
+  const f = await fixture();
+  const { MediaPipeline } = await import("../apps/server/media-pipeline");
+  const task = f.store.tasks(f.project.id).find((t) => t.stage === 3)!;
+  let voiceReady = false,
+    images = 0,
+    speech = 0;
+  let saved: any;
+  const pipeline = new MediaPipeline({
+    store: f.store,
+    call: async () =>
+      JSON.stringify({
+        voices: [{ character: "主角", voice: "alloy", sampleText: "你好" }],
+      }),
+    media: {
+      connection: (kind: string) => {
+        if (kind === "speech" && !voiceReady)
+          throw Error("speech 尚未支持此 CLI");
+        return f.c;
+      },
+      ensure: async (_id: string, _revision: number, kind: string) => {
+        if (kind === "image") {
+          images++;
+          return "saved-image";
+        }
+        speech++;
+        return "saved-audio";
+      },
+    },
+  } as unknown as Runtime);
+  const plan = {
+    type: "assets",
+    data: {
+      summary: "定妆",
+      assets: [{ id: "hero", name: "主角", kind: "character", prompt: "主角" }],
+      voices: [],
+    },
+  };
+  const run = (edited: any) =>
+    pipeline.produce(
+      task,
+      "test",
+      f.c,
+      [],
+      "",
+      edited,
+      new AbortController().signal,
+      (type, data) => {
+        saved = structuredClone({ type, data });
+      },
+    );
+  await expect(run(plan)).rejects.toThrow("定妆图片已生成并保存");
+  expect(saved.data.assets[0].imageId).toBe("saved-image");
+  expect(images).toBe(1);
+  expect(speech).toBe(0);
+  voiceReady = true;
+  const result = await run(saved);
+  expect("voices" in result.data && result.data.voices[0].audioId).toBe(
+    "saved-audio",
+  );
+  expect(images).toBe(1);
+  expect(speech).toBe(1);
 });

@@ -1,2 +1,31 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="theme-color" content="#111310"/><title>Spark Story · 创作工作台</title></head><body><div id="root"></div><script type="module" src="/apps/web/main.tsx"></script></body></html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f6f3ee" />
+    <title>Spark Story · 创作工作台</title>
+    <script>
+      (function () {
+        var pref = "system";
+        try {
+          pref = localStorage.getItem("spark-theme") || "system";
+        } catch (e) {}
+        var dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        var theme =
+          pref === "dark" || (pref !== "light" && dark) ? "dark" : "light";
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.dataset.themePref = pref;
+        document.documentElement.style.colorScheme = theme;
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta)
+          meta.setAttribute("content", theme === "dark" ? "#141311" : "#f6f3ee");
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/apps/web/main.tsx"></script>
+  </body>
+</html>
+

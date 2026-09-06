@@ -17,12 +17,65 @@ import {
 import {
   mediaBundle,
   mediaKinds,
+  mediaGenerationProgress,
   type MediaFile,
   type MediaJob,
 } from "../../packages/media";
 import type { Task } from "../../packages/domain";
 import type { ProductionRules } from "../../packages/production";
 const mediaUrl = (id: string) => "/api/media/files/" + id;
+export function MediaGenerationProgress({
+  progress,
+}: {
+  progress: ReturnType<typeof mediaGenerationProgress>;
+}) {
+  if (progress.phase === "idle") return null;
+  const pending = progress.items.findIndex((i) => !i.fileId);
+  return (
+    <div className="media-generation-progress" aria-label="产物生成进度">
+      <div className="media-generation-top">
+        <strong>{progress.label}</strong>
+        {progress.current && (
+          <span>
+            {statusLabels[progress.current.status] || progress.current.status}
+            {progress.current.prompt
+              ? ` · ${progress.current.prompt.slice(0, 36)}`
+              : ""}
+          </span>
+        )}
+      </div>
+      {progress.phase === "planning" ? (
+        <p>方案确定后，生成完成的图片、声音和视频会逐项出现在这里。</p>
+      ) : (
+        <>
+          <ol className="media-generation-track">
+            {progress.items.map((item, i) => (
+              <li
+                key={item.id}
+                className={
+                  item.fileId ? "done" : i === pending ? "current" : ""
+                }
+                title={item.name}
+              />
+            ))}
+          </ol>
+          <ul className="media-generation-items">
+            {progress.items.map((item, i) => (
+              <li
+                key={item.id}
+                className={
+                  item.fileId ? "done" : i === pending ? "current" : ""
+                }
+              >
+                {item.name}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
 const statusLabels: Record<string, string> = {
   queued: "准备提交",
   submitting: "正在提交",
@@ -291,7 +344,10 @@ export function MediaJobs({
           <button className="button primary">
             <Play size={14} /> 提交真实生成
           </button>
-          <p className="muted">使用该类型已配置的 API 模型，按预算预留费用。</p>
+          <p className="muted">
+            使用该类型绑定的媒体连接。图片和视频支持 Grok Build CLI 或 API；API
+            按预算预留费用，CLI 用量以供应商为准。
+          </p>
         </form>
       )}
       {jobs
@@ -371,12 +427,14 @@ export function BundleView({
   content,
   files,
   onSave,
+  onRetryAsset,
   busy,
   production,
 }: {
   content: string;
   files: MediaFile[];
   onSave: (content: string) => void;
+  onRetryAsset?: (assetId: string) => void;
   busy: boolean;
   production?: ProductionRules;
 }) {
@@ -464,7 +522,20 @@ export function BundleView({
                     )}
                   </>
                 ) : (
-                  <p>{asset.prompt}</p>
+                  <details className="asset-prompt">
+                    <summary>查看提示词</summary>
+                    <p>{asset.prompt}</p>
+                  </details>
+                )}
+                {onRetryAsset && (
+                  <button
+                    className="text-button asset-retry"
+                    disabled={busy}
+                    onClick={() => onRetryAsset(asset.id)}
+                  >
+                    <RefreshCw size={13} />
+                    {asset.imageId ? "重新生成" : "生成此图"}
+                  </button>
                 )}
               </section>
             ))}

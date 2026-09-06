@@ -101,6 +101,11 @@ export async function generate(
   onEvent: (message: string) => void,
   images: string[] = [],
   onText: (text: string) => void = () => {},
+  media?: {
+    tools: string[];
+    sessionId: string;
+    onProtocol: (event: any) => void;
+  },
 ): Promise<string> {
   if (c.transport === "api")
     return generateApi(c, prompt, signal, images, onText);
@@ -142,6 +147,19 @@ export async function generate(
             "--no-subagents",
             "--disable-web-search",
           ];
+  if (media) {
+    if (c.provider !== "grok-build" || c.transport !== "cli")
+      throw Error("媒体工具仅适用于 Grok Build");
+    args[args.indexOf("--tools") + 1] = media.tools.join(",");
+    args.push(
+      "--always-approve",
+      "--no-plan",
+      "--max-turns",
+      "6",
+      "--session-id",
+      media.sessionId,
+    );
+  }
   if (c.model) args.push("--model", c.model);
   let input = prompt;
   if (images.length) {
@@ -172,6 +190,13 @@ export async function generate(
       input =
         JSON.stringify({ type: "user", message: { role: "user", content } }) +
         "\n";
+    } else if (c.provider === "grok-build") {
+      args[args.indexOf("--tools") + 1] = "read_file";
+      args.push("--allow", "read_file", "--no-plan");
+      await Bun.write(
+        `${cwd}/prompt.txt`,
+        `${prompt}\n必须先使用 read_file 查看以下实际图像，再给出审核结论，不要仅凭文件名判断：${JSON.stringify(images)}`,
+      );
     } else
       throw Error(
         "当前主控 CLI 不支持图片审核输入，请将主控切换至 Claude Code、Codex 或视觉 API 模型",
@@ -224,6 +249,7 @@ export async function generate(
       if (!value.trim()) return;
       try {
         const e = JSON.parse(value);
+        media?.onProtocol(e);
         const decoded = decodeCliEvent(e);
         const next =
           decoded.text !== undefined

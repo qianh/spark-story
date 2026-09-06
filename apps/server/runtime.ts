@@ -157,6 +157,19 @@ export class Runtime {
       if (this.active.get(task.id) === abort) this.active.delete(task.id);
     });
   }
+  async retryAsset(taskId: string, revision: number, assetId: string) {
+    const task = this.store.task(taskId);
+    if (task.revision !== revision) throw Error("任务版本已变化");
+    if (this.active.has(task.id))
+      throw Error("任务正在执行，请先中断再重试单张定妆");
+    const abort = new AbortController();
+    this.active.set(task.id, abort);
+    try {
+      return await this.pipeline.retryAsset(task, assetId, abort.signal);
+    } finally {
+      if (this.active.get(task.id) === abort) this.active.delete(task.id);
+    }
+  }
   async execute(
     task: Task,
     attemptId: string,

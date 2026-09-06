@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { prepareVisualRequest } from "../../packages/media-profiles";
+import { runGrokMedia, grokResultPath } from "./grok-media";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Store } from "./store";
@@ -38,8 +41,16 @@ export class MediaService {
     return c;
   }
   validate(c: Connection, kind: MediaKind) {
+    if (
+      c.transport === "cli" &&
+      c.provider === "grok-build" &&
+      ["image", "video"].includes(kind)
+    )
+      return;
     if (c.transport !== "api")
-      throw Error(`${kind} 需要媒体 API 连接；主控和规划仍可使用 CLI`);
+      throw Error(
+        `${kind} 尚未支持此 CLI；图片和视频可使用 Grok Build CLI 或媒体 API`,
+      );
     const supports: Record<string, string[]> = {
       openai: ["image", "video", "speech"],
       compatible: ["image", "video", "speech"],
@@ -83,6 +94,7 @@ export class MediaService {
     inputs: string[] = [],
     options: Record<string, any> = {},
     override?: string,
+    force = false,
   ) {
     const task = this.store.task(taskId);
     if (task.revision !== revision) throw Error("任务版本已变化");
@@ -102,7 +114,12 @@ export class MediaService {
         inputFiles[1].kind !== "audio")
     )
       throw Error("口型同步需要依次选择一个视频和一个配音文件");
-    const effective = { ...c.settings, ...options };
+    const prepared = prepareVisualRequest(c, kind, prompt, inputs.length, {
+      ...c.settings,
+      ...options,
+    });
+    prompt = prepared.prompt;
+    const effective = prepared.options;
     const key = createHash("sha256")
       .update(
         JSON.stringify({
@@ -115,18 +132,20 @@ export class MediaService {
         }),
       )
       .digest("hex");
-    const cached = this.store.one<MediaJob>(
-      "SELECT * FROM media_jobs WHERE taskId=? AND operationKey=? AND status='completed' ORDER BY createdAt DESC LIMIT 1",
-      taskId,
-      key,
-    );
-    if (cached) return cached;
-    const existing = this.store.one<MediaJob>(
-      "SELECT * FROM media_jobs WHERE taskId=? AND operationKey=? AND status != 'failed' ORDER BY createdAt DESC LIMIT 1",
-      taskId,
-      key,
-    );
-    if (existing) return existing;
+    if (!force) {
+      const cached = this.store.one<MediaJob>(
+        "SELECT * FROM media_jobs WHERE taskId=? AND operationKey=? AND status='completed' ORDER BY createdAt DESC LIMIT 1",
+        taskId,
+        key,
+      );
+      if (cached) return cached;
+      const existing = this.store.one<MediaJob>(
+        "SELECT * FROM media_jobs WHERE taskId=? AND operationKey=? AND status != 'failed' ORDER BY createdAt DESC LIMIT 1",
+        taskId,
+        key,
+      );
+      if (existing) return existing;
+    }
     const now = new Date().toISOString();
     const j: MediaJob = {
       id: crypto.randomUUID(),
@@ -169,6 +188,7 @@ export class MediaService {
     options: Record<string, any>,
     signal: AbortSignal,
     override?: string,
+    force = false,
   ) {
     const j = this.create(
       taskId,
@@ -178,6 +198,7 @@ export class MediaService {
       inputs,
       options,
       override,
+      force,
     );
     return this.run(j.id, signal);
   }
@@ -214,7 +235,11 @@ export class MediaService {
       ["submitting", "downloading", "unknown", "cancelled"].includes(
         job.status,
       ) &&
-      !job.remoteId
+      !job.remoteId &&
+      !(
+        JSON.parse(job.connection).provider === "grok-build" &&
+        existsSync(grokResultPath(this.root, job.id))
+      )
     )
       throw Error(
         "供应商提交结果未知或已取消，请核实账单后显式标记重试，不能重复扣费",
@@ -284,17 +309,22 @@ export class MediaService {
     } catch (e) {
       const current = this.job(id),
         error = e instanceof Error ? e.message : String(e);
-      const status = signal.aborted
-        ? current.remoteId
-          ? "detached"
-          : current.status === "queued"
-            ? "cancelled"
+      const status =
+        c.transport === "cli" && current.status !== "queued"
+          ? existsSync(grokResultPath(this.root, job.id))
+            ? "detached"
             : "unknown"
-        : current.remoteId
-          ? "poll_error"
-          : current.status === "submitting"
-            ? "unknown"
-            : "failed";
+          : signal.aborted
+            ? current.remoteId
+              ? "detached"
+              : current.status === "queued"
+                ? "cancelled"
+                : "unknown"
+            : current.remoteId
+              ? "poll_error"
+              : current.status === "submitting"
+                ? "unknown"
+                : "failed";
       this.update(id, { status, error });
       if (current.costId)
         this.store.db.run(
@@ -348,6 +378,16 @@ export class MediaService {
     ids: string[],
     signal: AbortSignal,
   ): Promise<any> {
+    if (c.transport === "cli")
+      return runGrokMedia(
+        c,
+        j,
+        this.root,
+        ids.map((id) => this.files.get(id, j.projectId).path),
+        signal,
+        (message) =>
+          this.store.event(j.projectId, j.taskId, "media.cli", message),
+      );
     const model = c.model,
       refs = await Promise.all(
         ids.map((id) => this.files.dataUrl(id, j.projectId)),
@@ -432,7 +472,10 @@ export class MediaService {
             contents: [{ parts }],
             generationConfig: {
               responseModalities: ["TEXT", "IMAGE"],
-              imageConfig: { aspectRatio: o.aspect || "9:16" },
+              imageConfig: {
+                aspectRatio: o.aspect || "9:16",
+                ...(o.imageSize ? { imageSize: o.imageSize } : {}),
+              },
             },
           },
         );
@@ -449,48 +492,20 @@ export class MediaService {
       }
       let r: Response;
       if (c.provider === "xai") {
-        let reference = refs[0];
-        if (ids.length > 1) {
-          const sharp = (await import("sharp")).default,
-            columns = Math.ceil(Math.sqrt(ids.length)),
-            cell = 512;
-          const tiles = await Promise.all(
-            ids.map(async (id, index) => ({
-              input: await sharp(this.files.get(id, j.projectId).path)
-                .resize(cell, cell, { fit: "contain", background: "white" })
-                .png()
-                .toBuffer(),
-              left: (index % columns) * cell,
-              top: Math.floor(index / columns) * cell,
-            })),
-          );
-          const sheet = await sharp({
-            create: {
-              width: columns * cell,
-              height: Math.ceil(ids.length / columns) * cell,
-              channels: 3,
-              background: "white",
-            },
-          })
-            .composite(tiles)
-            .png()
-            .toBuffer();
-          reference = `data:image/png;base64,${sheet.toString("base64")}`;
-        }
         r = await this.request(
           c,
           ids.length ? "/images/edits" : "/images/generations",
           signal,
           {
             model,
-            prompt:
-              j.prompt +
-              (ids.length > 1
-                ? "。参考图是多个独立资产的联系表；仅提取人物与场景外观，输出单幅完整镜头，不要复制网格布局。"
-                : ""),
+            prompt: j.prompt,
             n: 1,
             aspect_ratio: o.aspect || "9:16",
-            ...(reference ? { image: { url: reference } } : {}),
+            ...(refs.length > 1
+              ? { images: refs.map((url) => ({ type: "image_url", url })) }
+              : refs[0]
+                ? { image: { url: refs[0] } }
+                : {}),
           },
         );
       } else if (ids.length) {
@@ -498,6 +513,7 @@ export class MediaService {
         f.set("model", model);
         f.set("prompt", j.prompt);
         f.set("size", o.size || imageSize(o.aspect));
+        if (o.quality) f.set("quality", o.quality);
         for (const id of ids) {
           const file = this.files.get(id, j.projectId);
           f.append(
@@ -528,6 +544,10 @@ export class MediaService {
           model,
           prompt: j.prompt,
           duration: Math.ceil(o.duration || 6),
+          ...(o.resolution ? { resolution: o.resolution } : {}),
+          ...(typeof o.generateAudio === "boolean"
+            ? { generate_audio: o.generateAudio }
+            : {}),
           aspect_ratio: o.aspect || "9:16",
           ...(refs[0] ? { image: { url: refs[0] } } : {}),
         });

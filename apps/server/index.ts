@@ -5,7 +5,12 @@ import { Store } from "./store";
 import { Runtime } from "./runtime";
 import { probe } from "./connectors";
 import { loadCredentials, saveCredential } from "./credentials";
-import { projectInput, connectionInput, roles } from "../../packages/domain";
+import {
+  projectInput,
+  connectionInput,
+  roles,
+  templates,
+} from "../../packages/domain";
 import { z } from "zod";
 import {
   mediaKinds,
@@ -121,13 +126,22 @@ const server = Bun.serve({
       if (project && req.method === "GET") return json(store.board(project[1]));
       if (project && req.method === "PATCH") {
         const value = z
-          .object({ budget: z.number().int().min(0).max(100000000) })
+          .object({
+            budget: z.number().int().min(0).max(100000000).optional(),
+            template: z
+              .string()
+              .refine((v) => templates.some((t) => t.id === v))
+              .optional(),
+          })
+          .refine((v) => v.budget !== undefined || v.template !== undefined)
           .parse(await body(req));
         store.project(project[1]);
-        store.db.run("UPDATE projects SET budget=? WHERE id=?", [
-          value.budget,
-          project[1],
-        ]);
+        if (value.budget !== undefined)
+          store.db.run("UPDATE projects SET budget=? WHERE id=?", [
+            value.budget,
+            project[1],
+          ]);
+        if (value.template) store.setVisualTemplate(project[1], value.template);
         return json({ ok: true });
       }
       if (path === "/api/connections" && req.method === "POST") {
@@ -184,6 +198,19 @@ const server = Bun.serve({
           value.instruction,
         );
         return json({ ok: true });
+      }
+      const retryAsset = path.match(/^\/api\/tasks\/([^/]+)\/retry-asset$/);
+      if (retryAsset && req.method === "POST") {
+        const value = revision
+          .extend({ assetId: z.string().min(1).max(120) })
+          .parse(await body(req));
+        return json(
+          await runtime.retryAsset(
+            retryAsset[1],
+            value.revision,
+            value.assetId,
+          ),
+        );
       }
       const task = path.match(
         /^\/api\/tasks\/([^/]+)\/(start|interrupt|approve|edit)$/,
@@ -380,7 +407,13 @@ const server = Bun.serve({
         {
           error:
             e instanceof z.ZodError
-              ? e.issues.map((i) => i.message).join("；")
+              ? e.issues
+                  .map(
+                    (i) =>
+                      (i.path.length ? i.path.join(".") + "：" : "") +
+                      i.message,
+                  )
+                  .join("；")
               : e instanceof Error
                 ? e.message
                 : "请求失败",

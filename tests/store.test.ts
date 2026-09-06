@@ -110,6 +110,21 @@ describe("持久任务规则", () => {
     ).toBeNull();
     expect(s.one<any>("SELECT COUNT(*) n FROM costs")!.n).toBe(1);
   });
+  test("切换画风只重做定妆及之后画面，剧本保留；执行中拒绝", () => {
+    const { s, p } = setup();
+    const script = s.one<any>("SELECT * FROM tasks WHERE stage=2")!;
+    s.updateTask(script.id, 1, "approved");
+    const assets = s.one<any>("SELECT * FROM tasks WHERE stage=3")!;
+    s.setVisualTemplate(p.id, "donghua3d");
+    expect(s.project(p.id).template).toBe("donghua3d");
+    expect(s.task(script.id).status).toBe("approved");
+    expect(s.task(script.id).revision).toBe(1);
+    expect(s.task(assets.id).revision).toBe(2);
+    expect(s.task(assets.id).error).toBe("");
+    s.updateTask(assets.id, 2, "running");
+    expect(() => s.setVisualTemplate(p.id, "cel")).toThrow("执行");
+    expect(() => s.setVisualTemplate(p.id, "missing")).toThrow("视觉模板");
+  });
   test("重启保留未知费用并使旧执行失效", () => {
     const { s, p, t } = setup();
     s.claim(t.id, 1, {});
