@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 export {};
 import { timingFixture, inventoryFixture } from "./timing";
+import { seriesResponse } from "./series";
 if (process.argv.includes("--version")) {
   console.log("fixture 1.0");
   process.exit(0);
@@ -33,27 +34,9 @@ if (mode === "oversize-result" || mode === "oversize-line") {
   process.exit(0);
 }
 if (mode === "episode-flow") {
-  if (prompt.startsWith("你是剧情展开 Agent")) {
-    console.log(
-      JSON.stringify({
-        type: "result",
-        result: JSON.stringify(inventoryFixture(2)),
-      }),
-    );
-    process.exit(0);
-  }
-  let result = prompt.startsWith("你是主控")
-    ? '{"pass":true,"feedback":"规划完整且符合上游"}'
-    : prompt.includes("只验收第一集")
-      ? "# 全剧分集规划\n\n共 2 集，按相遇与揭晓两段因果拆分。\n\n## EP001 雨中相遇\n事件：少女遇见信使。冲突：是否相信来信。人物变化：从怀疑到行动。结尾悬念：信中日期来自明天。下一集承接：追问信使来历。\n\n## EP002 真相揭晓\n承接信使线索，揭示来信真相，人物作出选择并完成收束。"
-      : prompt.includes("严格依据已确认分集规划")
-        ? "# 第一集剧本\n\n## 场景 S001 雨中相遇\n少女撑伞，信使递出一封来信。\n\n对白 D001：这封信为什么写着明天？\n\n结尾：停在来信日期，承接第二集。"
-        : "# 故事概要\n\n少女在雨中收到来自明天的信，她寻找信使并揭晓真相。";
-  if (!prompt.startsWith("你是主控") && result.startsWith("# 全剧"))
-    result += timingFixture(90, 2);
-  if (!prompt.startsWith("你是主控") && result.startsWith("# 第一集"))
-    result += timingFixture();
-  console.log(JSON.stringify({ type: "result", result }));
+  console.log(
+    JSON.stringify({ type: "result", result: seriesResponse(prompt) }),
+  );
   process.exit(0);
 }
 if (mode === "exit-error") {

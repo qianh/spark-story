@@ -48,10 +48,11 @@ test("旧六阶段作品安全升级：概要保留、插入规划、下游待�
       "SELECT * FROM tasks WHERE projectId=? ORDER BY stage",
       p.id,
     );
-    expect(tasks).toHaveLength(7);
+    expect(tasks).toHaveLength(9);
     expect(tasks[0].status).toBe("approved");
     expect(tasks[1].title).toBe("全剧分集规划");
-    expect(tasks[1].status).toBe("ready");
+    expect(tasks[1].status).toBe("blocked");
+    expect(tasks[7].status).toBe("ready");
     expect(tasks[2].id).toBe("legacy-1");
     expect(tasks[2].status).toBe("blocked");
     expect(

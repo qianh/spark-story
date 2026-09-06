@@ -93,6 +93,86 @@ export function TaskActivity({
     </section>
   );
 }
+const checkpointLabel = (status?: string) =>
+  ({ reviewed: "已通过", rejected: "未通过", candidate: "待审核" }[status || ""] ||
+  "未开始");
+export function latestCheckpoints<
+  T extends { taskId: string; revision: number; kind: string },
+>(all: T[], taskId: string, revision: number) {
+  const latest = new Map<string, T>();
+  for (const p of all)
+    if (p.taskId === taskId && p.revision === revision && !latest.has(p.kind))
+      latest.set(p.kind, p);
+  return Array.from(latest.values());
+}
+export function StoryProgress({
+  outline,
+  checkpoints,
+  currentKind,
+}: {
+  outline?: { chapters: { id: string; title: string }[] };
+  checkpoints: { kind: string; status: string }[];
+  currentKind?: string;
+}) {
+  const statusOf = (kind: string) =>
+    checkpoints.find((p) => p.kind === kind)?.status;
+  const chapters = outline?.chapters || [];
+  const passed = chapters.filter(
+    (c) => statusOf(`章节 ${c.id}`) === "reviewed",
+  ).length;
+  const structure = statusOf("故事结构");
+  return (
+    <section className="story-progress" aria-label="执行进度">
+      <header>
+        <strong>执行进度</strong>
+        <span>故事结构 · {checkpointLabel(structure)}</span>
+        {chapters.length > 0 && (
+          <span>
+            {passed} / {chapters.length} 章已通过
+          </span>
+        )}
+        {currentKind && (
+          <span>
+            当前 {currentKind} ·{" "}
+            {statusOf(currentKind)
+              ? checkpointLabel(statusOf(currentKind))
+              : "生成中"}
+          </span>
+        )}
+      </header>
+      <ol>
+        <li
+          className={
+            (structure === "reviewed" ? "done " : structure ? "active " : "") +
+            (currentKind === "故事结构" ? "current" : "")
+          }
+        >
+          结构
+          <small>{checkpointLabel(structure)}</small>
+        </li>
+        {chapters.map((c) => {
+          const kind = `章节 ${c.id}`;
+          const status = statusOf(kind);
+          const generating = currentKind === kind && !status;
+          return (
+            <li
+              key={c.id}
+              className={
+                (status === "reviewed" ? "done " : status || generating ? "active " : "") +
+                (currentKind === kind ? "current" : "")
+              }
+            >
+              {c.id}
+              <small>
+                {c.title} · {generating ? "生成中" : checkpointLabel(status)}
+              </small>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
 export function LiveDraft({
   content,
   active = true,

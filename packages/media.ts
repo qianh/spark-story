@@ -53,6 +53,8 @@ export const assetPlanSchema = z.object({
         identity: z.string().default(""),
         state: z.string().default(""),
         imageId: ref.optional(),
+        libraryId: ref.optional(),
+        baseLibraryId: ref.optional(),
       }),
     )
     .min(1),

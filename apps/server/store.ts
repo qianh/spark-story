@@ -1,10 +1,28 @@
+import {
+  stageOrder,
+  globalStages,
+  episodeStages,
+  rank,
+  storySchema,
+  seriesPlanSchema,
+  structured,
+  planIssues,
+  storyIssues,
+} from "../../packages/series";
+import {
+  assetPlanSchema,
+  storyboardSchema,
+  mediaBundle,
+} from "../../packages/media";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { upgradeEpisodePlanning } from "./migrations";
+import { upgradeEpisodePlanning, upgradeSeriesWorkflow } from "./migrations";
 import {
   productionRulesSchema,
   validateTextProduction,
+  timingManifest,
+  validateShotTiming,
   type ProductionRules,
 } from "../../packages/production";
 import {
@@ -44,6 +62,11 @@ export class Store {
       CREATE TABLE IF NOT EXISTS planning_checkpoints(id TEXT PRIMARY KEY,taskId TEXT,revision INTEGER,kind TEXT,content TEXT,status TEXT,createdAt TEXT);
     `);
     upgradeEpisodePlanning(this, path);
+    upgradeSeriesWorkflow(this, path);
+    this.db
+      .exec(`CREATE TABLE IF NOT EXISTS voice_library(projectId TEXT,character TEXT,connectionId TEXT,data TEXT,PRIMARY KEY(projectId,character,connectionId));
+      CREATE TABLE IF NOT EXISTS episodes(projectId TEXT,number INTEGER,planRevision INTEGER,data TEXT,active INTEGER DEFAULT 1,PRIMARY KEY(projectId,number));
+      CREATE TABLE IF NOT EXISTS asset_library(id TEXT PRIMARY KEY,projectId TEXT,assetId TEXT,version INTEGER,taskId TEXT,revision INTEGER,data TEXT,createdAt TEXT,UNIQUE(projectId,assetId,version));`);
   }
   list<T>(sql: string, ...args: any[]): T[] {
     return this.db.query(sql).all(...args) as T[];
@@ -70,28 +93,13 @@ export class Store {
         p.budget,
         p.createdAt,
       ]);
-      stages.forEach((title, stage) =>
-        this.db.run(
-          "INSERT INTO tasks(id,projectId,stage,title,role,status,updatedAt) VALUES(?,?,?,?,?,?,?)",
-          [
-            id(),
-            p.id,
-            stage,
-            title,
-            [
-              "剧情 Agent",
-              "分集规划 Agent",
-              "剧情 Agent",
-              "角色与资产 Agent",
-              "分镜 Agent",
-              "视频 Agent",
-              "后期 Agent",
-            ][stage],
-            stage === 0 ? "ready" : "blocked",
-            now(),
-          ],
-        ),
-      );
+      for (const stage of stageOrder)
+        this.createTask(
+          p.id,
+          stage,
+          globalStages.includes(stage) ? 0 : 1,
+          stage === 0 ? "ready" : "blocked",
+        );
       this.db.run("INSERT INTO project_settings VALUES(?,?)", [
         p.id,
         JSON.stringify({
@@ -102,7 +110,7 @@ export class Store {
         p.id,
         "",
         "project.created",
-        "项目已创建。先确认故事概要，再规划全剧分集，最后细写并制作第一集。",
+        "项目已创建。先确认概要与完整故事稿，再拆集；每集独立制作，共享已确认资产。",
       );
     })();
     return p;
@@ -152,7 +160,7 @@ export class Store {
         ],
       );
       const outline = this.one<Task>(
-        "SELECT * FROM tasks WHERE projectId=? AND stage=0",
+        "SELECT * FROM tasks WHERE projectId=? AND stage=7",
         projectId,
       )!;
       this.invalidateAfter(outline);
@@ -269,11 +277,7 @@ export class Store {
         !this.canRun(t)
       )
         throw Error("审核版本已变化，或尚未通过主控审核");
-      const issues = validateTextProduction(
-        a.content,
-        t.stage,
-        this.productionRules(t.projectId),
-      );
+      const issues = this.validateArtifact(t, a.content);
       if (issues.length) throw Error(issues.join("；"));
       this.db.run(
         "UPDATE artifacts SET status='superseded' WHERE taskId=? AND status='approved'",
@@ -283,10 +287,11 @@ export class Store {
         artifactId,
       ]);
       this.updateTask(taskId, revision, "approved");
-      this.db.run(
-        "UPDATE tasks SET status='ready',updatedAt=? WHERE projectId=? AND stage=? AND status='blocked'",
-        [now(), t.projectId, t.stage + 1],
-      );
+      if (t.stage === 1) this.syncEpisodes(t, a.content);
+      if (t.stage === 3) this.registerAssets(t, a.content);
+      for (const next of this.tasks(t.projectId))
+        if (next.status === "blocked" && this.canRun(next))
+          this.updateTask(next.id, next.revision, "ready");
       this.event(
         t.projectId,
         t.id,
@@ -322,25 +327,344 @@ export class Store {
       return { interventionId, revision: revision + 1 };
     })();
   }
-  invalidateAfter(task: Task) {
-    this.db.run(
-      "UPDATE tasks SET revision=revision+1,status='blocked',error='上游已修改，等待重新确认',updatedAt=? WHERE projectId=? AND stage>?",
-      [now(), task.projectId, task.stage],
+  repairChapter(
+    taskId: string,
+    revision: number,
+    chapterId: string,
+    instruction: string,
+  ) {
+    const t = this.task(taskId);
+    if (t.stage !== 7 || t.revision !== revision)
+      throw Error("章节任务或修订已变化");
+    if (["running", "reviewing", "coordinating"].includes(t.status))
+      throw Error("请先暂停故事任务，再提交章节修改");
+    const structure = this.one<{ content: string }>(
+      "SELECT content FROM planning_checkpoints WHERE taskId=? AND revision=? AND kind='故事结构' AND status='reviewed' ORDER BY rowid DESC LIMIT 1",
+      taskId,
+      revision,
     );
+    const chapters = structure ? JSON.parse(structure.content).chapters : [];
+    const index = chapters.findIndex((c: any) => c.id === chapterId);
+    if (index < 0) throw Error("未找到可局部修订的章节");
+    this.db.transaction(() => {
+      this.db.run(
+        "UPDATE tasks SET revision=revision+1,round=0,status='paused',instruction=?,error='',updatedAt=? WHERE id=?",
+        [
+          `修改章节 ${chapterId}：${instruction}。其他故事事实与结构保留。`,
+          now(),
+          taskId,
+        ],
+      );
+      const preserved = [
+        "故事结构",
+        ...chapters.slice(0, index).map((c: any) => `章节 ${c.id}`),
+      ];
+      for (const kind of preserved) {
+        const cp = this.one<{ content: string }>(
+          "SELECT content FROM planning_checkpoints WHERE taskId=? AND revision=? AND kind=? AND status='reviewed' ORDER BY rowid DESC LIMIT 1",
+          taskId,
+          revision,
+          kind,
+        );
+        if (cp)
+          this.db.run(
+            "INSERT INTO planning_checkpoints VALUES(?,?,?,?,?,?,?)",
+            [id(), taskId, revision + 1, kind, cp.content, "reviewed", now()],
+          );
+      }
+      this.invalidateAfter(t);
+      this.event(
+        t.projectId,
+        t.id,
+        "story.repair",
+        `已保存 ${chapterId} 修改要求；前 ${index} 章保留，本章与其后衔接章节将重新生成。点击开始执行继续。`,
+      );
+    })();
+  }
+  tasks(projectId: string) {
+    const episodes = this.list<{ number: number; active: number }>(
+      "SELECT number,active FROM episodes WHERE projectId=?",
+      projectId,
+    );
+    const active = new Set(
+      episodes.filter((e) => e.active).map((e) => e.number),
+    );
+    return this.list<Task>("SELECT * FROM tasks WHERE projectId=?", projectId)
+      .filter((t) => !t.episode || !episodes.length || active.has(t.episode))
+      .sort(
+        (a, b) =>
+          (a.episode || 0) - (b.episode || 0) || rank(a.stage) - rank(b.stage),
+      );
+  }
+  createTask(
+    projectId: string,
+    stage: number,
+    episode: number,
+    status = "blocked",
+  ) {
+    this.db.run(
+      "INSERT OR IGNORE INTO tasks(id,projectId,stage,title,role,status,updatedAt,episode) VALUES(?,?,?,?,?,?,?,?)",
+      [
+        id(),
+        projectId,
+        stage,
+        stages[stage],
+        [
+          "剧情 Agent",
+          "分集规划 Agent",
+          "剧情 Agent",
+          "角色与资产 Agent",
+          "分镜 Agent",
+          "视频 Agent",
+          "后期 Agent",
+          "故事 Agent",
+          "分镜 Agent",
+        ][stage],
+        status,
+        now(),
+        episode,
+      ],
+    );
+  }
+  dependencies(task: Task) {
+    return this.list<Task>(
+      "SELECT * FROM tasks WHERE projectId=? AND (episode=0 OR episode=?)",
+      task.projectId,
+      task.episode || 0,
+    )
+      .sort((a, b) => rank(a.stage) - rank(b.stage))
+      .filter(
+        (t) =>
+          t.id !== task.id &&
+          (globalStages.includes(t.stage)
+            ? rank(t.stage) < rank(task.stage)
+            : !!task.episode &&
+              t.episode === task.episode &&
+              rank(t.stage) < rank(task.stage)),
+      );
+  }
+  downstream(task: Task) {
+    return this.tasks(task.projectId).filter(
+      (t) =>
+        rank(t.stage) > rank(task.stage) &&
+        (globalStages.includes(task.stage) ||
+          (t.episode === task.episode && !globalStages.includes(t.stage))),
+    );
+  }
+  upstream(task: Task) {
+    return this.dependencies(task).flatMap((t) =>
+      this.list<Artifact>(
+        "SELECT * FROM artifacts WHERE taskId=? AND revision=? AND status='approved'",
+        t.id,
+        t.revision,
+      ),
+    );
+  }
+  invalidateAfter(task: Task) {
+    for (const t of this.downstream(task))
+      this.db.run(
+        "UPDATE tasks SET revision=revision+1,round=0,status='blocked',error='上游已修改，等待重新确认',updatedAt=? WHERE id=?",
+        [now(), t.id],
+      );
     this.event(
       task.projectId,
       task.id,
       "plan.revised",
-      "主控已使下游旧修订失效；已有产物保留，等待上游重新确认。",
+      "相关下游修订已失效；已有产物保留，其他集的独立制作不受本集修改影响。",
     );
   }
   canRun(task: Task) {
-    return !this.one(
-      "SELECT id FROM tasks WHERE projectId=? AND stage<? AND status<>? LIMIT 1",
-      task.projectId,
+    if (
+      task.episode &&
+      !this.one(
+        "SELECT number FROM episodes WHERE projectId=? AND number=? AND active=1",
+        task.projectId,
+        task.episode,
+      )
+    )
+      return false;
+    return this.dependencies(task).every((t) => t.status === "approved");
+  }
+  validateArtifact(task: Task, content: string) {
+    if (task.stage === 7) {
+      const story = structured(content, storySchema);
+      return story
+        ? storyIssues(story)
+        : ["完整故事稿结构不完整，需包含章节正文和故事段落索引"];
+    }
+    if (task.stage === 1) {
+      const plan = structured(content, seriesPlanSchema);
+      const source = this.upstream(task).find(
+        (a) => this.task(a.taskId).stage === 7,
+      );
+      const story = source && structured(source.content, storySchema);
+      return plan && story
+        ? planIssues(plan, story)
+        : ["需要已确认完整故事稿和有效的轻量分集规划"];
+    }
+    if (task.stage === 8) {
+      const bundle = mediaBundle(content);
+      const parsed = storyboardSchema.safeParse(bundle?.data);
+      const script = this.upstream(task).find(
+        (a) => this.task(a.taskId).stage === 2,
+      );
+      return bundle?.type === "shot-plan" && parsed.success
+        ? validateShotTiming(
+            parsed.data.shots,
+            this.productionRules(task.projectId),
+            timingManifest(script?.content || "")?.episodes[0],
+          )
+        : ["文字分镜产物无效"];
+    }
+    if ([3, 4, 5, 6].includes(task.stage)) {
+      const bundle = mediaBundle(content);
+      if (
+        !bundle ||
+        bundle.type !==
+          ["", "", "", "assets", "storyboard", "production", "timeline"][
+            task.stage
+          ]
+      )
+        return ["媒体产物类型不匹配"];
+      if (task.stage === 3) {
+        const parsed = assetPlanSchema.safeParse(bundle.data);
+        if (!parsed.success) return ["资产清单结构无效"];
+        if (
+          new Set(parsed.data.assets.map((a) => a.id)).size !==
+          parsed.data.assets.length
+        )
+          return ["资产 ID 重复"];
+        for (const asset of parsed.data.assets) {
+          if (
+            !asset.imageId ||
+            !this.one(
+              "SELECT id FROM media_files WHERE id=? AND projectId=?",
+              asset.imageId,
+              task.projectId,
+            )
+          )
+            return ["资产图片不存在或不属于本作品"];
+          if (asset.libraryId) {
+            const saved = this.assetLibrary(task.projectId).find(
+              (a) => a.libraryId === asset.libraryId,
+            );
+            if (
+              !saved ||
+              saved.imageId !== asset.imageId ||
+              saved.identity !== asset.identity ||
+              saved.state !== asset.state
+            )
+              return ["复用的资产版本发生变化，请创建新版本"];
+          }
+        }
+        return [];
+      }
+      const parsed = storyboardSchema.safeParse(bundle.data);
+      const script = this.upstream(task).find(
+        (a) => this.task(a.taskId).stage === 2,
+      );
+      return parsed.success
+        ? validateShotTiming(
+            parsed.data.shots,
+            this.productionRules(task.projectId),
+            timingManifest(script?.content || "")?.episodes[0],
+          )
+        : ["镜头清单结构无效"];
+    }
+    const issues = validateTextProduction(
+      content,
       task.stage,
-      "approved",
+      this.productionRules(task.projectId),
+      task.episode || 1,
     );
+    if (
+      task.stage === 2 &&
+      JSON.stringify(timingManifest(content)?.episodes[0]?.sourceStepIds) !==
+        JSON.stringify(this.episodePlan(task)?.sourceBeatIds)
+    )
+      issues.push("剧本越过本集已确认来源边界");
+    return issues;
+  }
+  syncEpisodes(task: Task, content: string) {
+    const plan = seriesPlanSchema.parse(JSON.parse(content));
+    this.db.run("UPDATE episodes SET active=0 WHERE projectId=?", [
+      task.projectId,
+    ]);
+    plan.episodes.forEach((ep, i) => {
+      this.db.run(
+        "INSERT INTO episodes VALUES(?,?,?,?,1) ON CONFLICT(projectId,number) DO UPDATE SET planRevision=excluded.planRevision,data=excluded.data,active=1",
+        [task.projectId, i + 1, task.revision, JSON.stringify(ep)],
+      );
+      for (const stage of episodeStages)
+        this.createTask(task.projectId, stage, i + 1);
+    });
+  }
+  episodePlan(task: Task) {
+    const row = this.one<{ data: string }>(
+      "SELECT data FROM episodes WHERE projectId=? AND number=? AND active=1",
+      task.projectId,
+      task.episode || 1,
+    );
+    return row ? JSON.parse(row.data) : null;
+  }
+  assetLibrary(projectId: string) {
+    return this.list<{ id: string; data: string; version: number }>(
+      "SELECT * FROM asset_library WHERE projectId=? ORDER BY createdAt DESC",
+      projectId,
+    ).map((r) => ({
+      ...JSON.parse(r.data),
+      libraryId: r.id,
+      version: r.version,
+    }));
+  }
+  approvedVoices(projectId: string, connectionId: string) {
+    return this.list<{ data: string }>(
+      "SELECT data FROM voice_library WHERE projectId=? AND connectionId=?",
+      projectId,
+      connectionId,
+    ).map((r) => JSON.parse(r.data));
+  }
+  registerAssets(task: Task, content: string) {
+    const bundle = mediaBundle(content);
+    const parsed = assetPlanSchema.parse(bundle?.data);
+    const assets = parsed.assets;
+    const binding = this.one<{ connectionId: string }>(
+      "SELECT connectionId FROM bindings WHERE role='语音模型'",
+    );
+    const seen = new Set<string>();
+    if (binding)
+      for (const voice of parsed.voices) {
+        if (seen.has(voice.character)) continue;
+        seen.add(voice.character);
+        this.db.run(
+          "INSERT INTO voice_library VALUES(?,?,?,?) ON CONFLICT(projectId,character,connectionId) DO UPDATE SET data=excluded.data",
+          [
+            task.projectId,
+            voice.character,
+            binding.connectionId,
+            JSON.stringify(voice),
+          ],
+        );
+      }
+    for (const asset of assets) {
+      if (asset.libraryId) continue;
+      const version =
+        (this.one<{ n: number }>(
+          "SELECT MAX(version) AS n FROM asset_library WHERE projectId=? AND assetId=?",
+          task.projectId,
+          asset.id,
+        )?.n || 0) + 1;
+      this.db.run("INSERT INTO asset_library VALUES(?,?,?,?,?,?,?,?)", [
+        id(),
+        task.projectId,
+        asset.id,
+        version,
+        task.id,
+        task.revision,
+        JSON.stringify(asset),
+        now(),
+      ]);
+    }
   }
   reserve(projectId: string, attemptId: string, c: Connection) {
     if (c.transport === "cli") return null;
@@ -381,7 +705,20 @@ export class Store {
           "task.recovered",
           "后台已恢复任务记录；旧运行已失效，未自动重复提交。",
         );
-        if (t.stage > 2) {
+        for (const cp of this.list<{
+          kind: string;
+          content: string;
+          status: string;
+        }>(
+          "SELECT kind,content,status FROM planning_checkpoints WHERE taskId=? AND revision=? ORDER BY rowid",
+          t.id,
+          t.revision,
+        ))
+          this.db.run(
+            "INSERT INTO planning_checkpoints VALUES(?,?,?,?,?,?,?)",
+            [id(), t.id, t.revision + 1, cp.kind, cp.content, cp.status, now()],
+          );
+        if ([3, 4, 5, 6].includes(t.stage)) {
           const checkpoint = this.one<Artifact>(
             "SELECT * FROM artifacts WHERE taskId=? AND revision=? AND status='candidate' ORDER BY createdAt DESC LIMIT 1",
             t.id,
@@ -416,9 +753,12 @@ export class Store {
         projectId,
       ),
       productionNeedsReplan:
-        !!plan &&
-        validateTextProduction(plan.content, 1, this.productionRules(projectId))
-          .length > 0,
+        !!plan && !structured(plan.content, seriesPlanSchema),
+      episodes: this.list(
+        "SELECT * FROM episodes WHERE projectId=? AND active=1 ORDER BY number",
+        projectId,
+      ).map((r: any) => ({ ...r, ...JSON.parse(r.data), data: undefined })),
+      assetLibrary: this.assetLibrary(projectId),
       progress: this.list(
         "SELECT p.* FROM task_progress p JOIN tasks t ON t.id=p.taskId WHERE t.projectId=?",
         projectId,
@@ -431,10 +771,7 @@ export class Store {
         "SELECT * FROM media_jobs WHERE projectId=? ORDER BY createdAt DESC",
         projectId,
       ),
-      tasks: this.list<Task>(
-        "SELECT * FROM tasks WHERE projectId=? ORDER BY stage",
-        projectId,
-      ),
+      tasks: this.tasks(projectId),
       artifacts: this.list<Artifact>(
         "SELECT a.* FROM artifacts a JOIN tasks t ON t.id=a.taskId WHERE t.projectId=? ORDER BY a.createdAt DESC",
         projectId,

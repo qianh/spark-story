@@ -43,7 +43,12 @@ test("制作规则可编辑、非法区间被拒绝、保存后重置规划但�
   const after = await (await request.get("/api/projects/" + p.id)).json();
   expect(after.tasks[0].revision).toBe(before.tasks[0].revision);
   expect(after.production.capacity.speechUnitsPerSecond).toBe(3.2);
-  expect(after.tasks[1].revision).toBe(before.tasks[1].revision + 1);
+  expect(after.tasks.find((t: any) => t.stage === 7).revision).toBe(
+    before.tasks.find((t: any) => t.stage === 7).revision,
+  );
+  expect(after.tasks.find((t: any) => t.stage === 1).revision).toBe(
+    before.tasks.find((t: any) => t.stage === 1).revision + 1,
+  );
   expect(
     (
       await request.put("/api/projects/" + p.id + "/production", {
@@ -56,7 +61,7 @@ test("制作规则可编辑、非法区间被拒绝、保存后重置规划但�
     fullPage: true,
   });
 });
-test("七阶段：概要确认→分集规划→第一集剧本，每个确认点独立解锁", async ({
+test("完整故事先确认，拆集后可选择各集，每个确认点独立解锁", async ({
   page,
   request,
 }) => {
@@ -97,12 +102,13 @@ test("七阶段：概要确认→分集规划→第一集剧本，每个确认�
     p.id,
   );
   await page.goto("/");
-  await expect(page.locator(".stage-strip button")).toHaveCount(7);
+  await expect(page.locator(".stage-strip button")).toHaveCount(9);
   await page.getByRole("button", { name: "进入当前工作区" }).click();
   for (const [index, title] of [
     "故事概要",
+    "完整故事稿",
     "全剧分集规划",
-    "第一集剧本",
+    "单集剧本",
   ].entries()) {
     await expect(page.locator(".page-heading h1")).toContainText(title);
     await page.getByRole("button", { name: "开始执行", exact: true }).click();
@@ -111,15 +117,18 @@ test("七阶段：概要确认→分集规划→第一集剧本，每个确认�
     });
     const board = await (await request.get("/api/projects/" + p.id)).json();
     expect(board.tasks[index + 1].status).toBe("blocked");
-    if (index === 1) {
-      await expect(
-        page.getByText(/全剧情节展开清单 · 2 个戏剧单元/),
-      ).toBeVisible();
-      await expect(page.locator(".markdown-content")).toContainText("内容估算");
+    if (index === 2) {
+      await expect(page.locator(".markdown-content")).toContainText("粗估");
       await expect(page.locator(".markdown-content")).toContainText("EP002");
       const bad = await request.post(
-        "/api/tasks/" + board.tasks[2].id + "/start",
-        { data: { revision: board.tasks[2].revision } },
+        "/api/tasks/" +
+          board.tasks.find((t: any) => t.stage === 2).id +
+          "/start",
+        {
+          data: {
+            revision: board.tasks.find((t: any) => t.stage === 2).revision,
+          },
+        },
       );
       expect(bad.status()).toBe(400);
       await page.screenshot({
@@ -128,13 +137,23 @@ test("七阶段：概要确认→分集规划→第一集剧本，每个确认�
       });
     }
     await page.getByRole("button", { name: "确认此版本" }).click();
-    const next = ["全剧分集规划", "第一集剧本", "定妆与资产"][index];
+    const next = ["完整故事稿", "全剧分集规划", "单集剧本", "文字分镜"][index];
     await expect(
       page.getByRole("button", { name: "进入" + next + " →" }),
     ).toBeVisible();
-    if (index < 2)
+    if (index < 3)
       await page.getByRole("button", { name: "进入" + next + " →" }).click();
   }
+  await page.getByRole("button", { name: "返回阶段看板" }).click();
+  await page.getByLabel("制作集数").selectOption("2");
+  await expect(page.getByLabel("制作集数")).toHaveValue("2");
+  await page.getByRole("button", { name: "进入当前工作区" }).click();
+  await expect(page.locator(".page-heading h1")).toContainText("单集剧本");
+  await page.getByRole("button", { name: "开始执行", exact: true }).click();
+  await expect(page.getByRole("button", { name: "确认此版本" })).toBeVisible({
+    timeout: 10000,
+  });
+  await expect(page.locator(".markdown-content")).toContainText("EP002");
   await page.getByRole("button", { name: "返回阶段看板" }).click();
   await page.setViewportSize({ width: 390, height: 844 });
   expect(

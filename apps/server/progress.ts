@@ -1,3 +1,4 @@
+import { isMediaStage } from "../../packages/series";
 import type { Store } from "./store";
 import type { Task, Connection } from "../../packages/domain";
 import type { TaskProgress } from "../../packages/progress";
@@ -46,7 +47,7 @@ export class ProgressTracker {
   text = (content: string) => {
     if (this.closed) return;
     this.row.outputAt = new Date().toISOString();
-    if (this.row.phase === "generate" && this.task.stage < 3)
+    if (this.row.phase === "generate" && !isMediaStage(this.task.stage))
       this.row.content = content.slice(0, 240000);
     if (Date.now() - this.lastWrite > 300) this.flush();
   };

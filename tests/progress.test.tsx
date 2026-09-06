@@ -1,7 +1,13 @@
 import { test, expect } from "bun:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TaskActivity, LiveDraft } from "../apps/web/TaskActivity";
+import {
+  TaskActivity,
+  LiveDraft,
+  StoryProgress,
+  latestCheckpoints,
+} from "../apps/web/TaskActivity";
+import { outlineFixture } from "./fixtures/series";
 import { ProgressTracker } from "../apps/server/progress";
 import { Store } from "../apps/server/store";
 import type { Task, Connection } from "../packages/domain";
@@ -78,6 +84,73 @@ test("状态面板区分等待首字、生成、审核、断线和无心跳", ()
   expect(
     renderToStaticMarkup(<LiveDraft content="# 草稿" active={false} />),
   ).toContain("中断前草稿");
+});
+test("同名检查点只保留最新状态，不被更早的候选覆盖", () => {
+  const html = renderToStaticMarkup(
+    <StoryProgress
+      outline={outlineFixture}
+      checkpoints={latestCheckpoints(
+        [
+          {
+            taskId: "t",
+            revision: 1,
+            kind: "故事结构",
+            status: "reviewed",
+            content: "",
+          },
+          {
+            taskId: "t",
+            revision: 1,
+            kind: "故事结构",
+            status: "candidate",
+            content: "",
+          },
+          {
+            taskId: "t",
+            revision: 1,
+            kind: "章节 CH001",
+            status: "reviewed",
+            content: "",
+          },
+          {
+            taskId: "t",
+            revision: 1,
+            kind: "章节 CH001",
+            status: "candidate",
+            content: "",
+          },
+        ],
+        "t",
+        1,
+      )}
+      currentKind="章节 CH002"
+    />,
+  );
+  expect(html).toContain("1 / 2 章已通过");
+  expect(html).toContain("故事结构 · 已通过");
+  expect(html).toContain("雨中相遇 · 已通过");
+  expect(html).toContain("当前 章节 CH002 · 生成中");
+});
+test("完整故事稿进度直接列出结构、各章状态和当前步骤", () => {
+  const html = renderToStaticMarkup(
+    <StoryProgress
+      outline={outlineFixture}
+      checkpoints={[
+        { kind: "故事结构", status: "reviewed" },
+        { kind: "章节 CH001", status: "candidate" },
+      ]}
+      currentKind="章节 CH001"
+    />,
+  );
+  expect(html).toContain("执行进度");
+  expect(html).toContain("0 / 2 章已通过");
+  expect(html).toContain("故事结构");
+  expect(html).toContain("已通过");
+  expect(html).toContain("CH001");
+  expect(html).toContain("待审核");
+  expect(html).toContain("CH002");
+  expect(html).toContain("未开始");
+  expect(html).toContain("当前 章节 CH001");
 });
 test("进度持久化，结束和旧修订不能继续写，重启保留草稿并标中断", () => {
   const s = new Store(":memory:");

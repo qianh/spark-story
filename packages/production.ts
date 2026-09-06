@@ -119,6 +119,7 @@ export function validateTextProduction(
   content: string,
   stage: number,
   rules: ProductionRules,
+  episodeNumber?: number,
 ): string[] {
   if (stage !== 1 && stage !== 2) return [];
   const manifest = timingManifest(content);
@@ -136,11 +137,16 @@ export function validateTextProduction(
   if (stage === 2 && manifest.episodes.length !== 1)
     issues.push("第一集剧本只能包含 EP001。");
   manifest.episodes.forEach((ep, index) => {
-    const expected = `EP${String(index + 1).padStart(3, "0")}`;
+    const expected = `EP${String(stage === 2 ? episodeNumber || 1 : index + 1).padStart(3, "0")}`;
     if (ep.id !== expected)
       issues.push(`集编号应为 ${expected}，收到 ${ep.id}`);
     issues.push(...durationIssues(ep.duration, rules, ep.id));
-    issues.push(...capacityAudit(ep, rules).issues);
+    if (!episodeNumber) issues.push(...capacityAudit(ep, rules).issues);
+    else
+      for (const b of ep.beats) {
+        if (!b.sceneId || !b.performance)
+          issues.push(`${ep.id}/${b.id} 缺少场景与实际对白、动作`);
+      }
     let cursor = 0;
     const ids = new Set<string>();
     for (const b of ep.beats) {
@@ -154,11 +160,14 @@ export function validateTextProduction(
     }
     if (Math.abs(cursor - ep.duration) > 0.05)
       issues.push(`${ep.id} 节拍未完整覆盖单集时长`);
-    if (ep.beats[0].purpose !== "hook")
+    if (!episodeNumber && ep.beats[0].purpose !== "hook")
       issues.push(
         `${ep.id} 开场需要明确的 hook，可采用承接/危机/问题/反常，不必强行制造冲突`,
       );
-    if (!["cliffhanger", "closure"].includes(ep.beats.at(-1)!.purpose))
+    if (
+      !episodeNumber &&
+      !["cliffhanger", "closure"].includes(ep.beats.at(-1)!.purpose)
+    )
       issues.push(`${ep.id} 结尾需要悬念或收束`);
   });
   return issues;

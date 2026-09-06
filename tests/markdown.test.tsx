@@ -3,6 +3,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MarkdownContent } from "../apps/web/MarkdownContent";
 import { timingFixture } from "./fixtures/timing";
+import { outlineFixture, storyFixture } from "./fixtures/series";
 test("时间清单显示为可读节拍表，而非原始 JSON", () => {
   const html = renderToStaticMarkup(
     <MarkdownContent content={"# 剧本" + timingFixture()} />,
@@ -42,4 +43,33 @@ test("Markdown 不执行 HTML、危险链接或远程图片请求", () => {
   expect(html).not.toContain('href="javascript:');
   expect(html).not.toContain("<img");
   expect(html).toContain('rel="noopener noreferrer"');
+});
+test("故事结构检查点显示章节标题与梗概，而不是原始 JSON", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownContent content={JSON.stringify(outlineFixture)} />,
+  );
+  expect(html).toContain("故事结构");
+  expect(html).toContain("CH001 · 雨中相遇");
+  expect(html).toContain("女孩尚未决定是否留下");
+  expect(html).not.toContain('"synopsis"');
+});
+test("完整故事稿仍按章节正文渲染，不被当成结构提纲", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownContent content={JSON.stringify(storyFixture)} />,
+  );
+  expect(html).toContain("完整故事稿");
+  expect(html).toContain("CH001 · 雨中相遇");
+  expect(html).not.toContain("故事结构");
+});
+test("单章检查点把正文和衔接分开，衔接放在可展开索引里", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownContent content={JSON.stringify(storyFixture.chapters[0])} />,
+  );
+  expect(html).toContain("CH001 · 雨中相遇");
+  expect(html).toContain("女孩走到山门前");
+  expect(html).toContain("衔接与故事段落索引");
+  expect(html).toContain("CH001-B001");
+  expect(html.indexOf("女孩走到山门前")).toBeLessThan(
+    html.indexOf("衔接与故事段落索引"),
+  );
 });

@@ -1,3 +1,4 @@
+import { storyFixture, planFixture, approveFixture } from "./fixtures/series";
 import { afterEach, describe, expect, test } from "bun:test";
 import { Store } from "../apps/server/store";
 import { timingFixture } from "./fixtures/timing";
@@ -41,10 +42,10 @@ describe("持久任务规则", () => {
   test("项目不限制集数；下一阶段须待人工通过", () => {
     const { s, p, t } = setup();
     expect(s.list("SELECT * FROM tasks WHERE projectId=?", p.id)).toHaveLength(
-      7,
+      9,
     );
     const next = s.list<any>(
-      "SELECT * FROM tasks WHERE projectId=? AND stage=1",
+      "SELECT * FROM tasks WHERE projectId=? AND stage=7",
       p.id,
     )[0];
     expect(s.canRun(next)).toBe(false);
@@ -55,21 +56,15 @@ describe("持久任务规则", () => {
     s.approve(t.id, 1, a.id);
     expect(s.canRun(s.task(next.id))).toBe(true);
     expect(s.task(next.id).status).toBe("ready");
-    expect(s.task(next.id).title).toBe("全剧分集规划");
+    expect(s.task(next.id).title).toBe("完整故事稿");
     const script = s.one<any>(
       "SELECT * FROM tasks WHERE projectId=? AND stage=2",
       p.id,
     )!;
-    expect(script.title).toBe("第一集剧本");
+    expect(script.title).toBe("单集剧本");
     expect(s.canRun(script)).toBe(false);
-    const plan = s.publish(
-      next.id,
-      1,
-      "根据故事容量拆分全剧，每集事件与衔接" + timingFixture(),
-    );
-    s.db.run("UPDATE artifacts SET status='reviewed' WHERE id=?", [plan.id]);
-    s.updateTask(next.id, 1, "awaiting_user");
-    s.approve(next.id, 1, plan.id);
+    approveFixture(s, p.id, 7, JSON.stringify(storyFixture));
+    approveFixture(s, p.id, 1, JSON.stringify(planFixture));
     expect(s.canRun(s.task(script.id))).toBe(true);
   });
   test("重复领取同一任务被拒绝", () => {

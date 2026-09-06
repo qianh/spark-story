@@ -3,11 +3,13 @@ import { productionRulesSchema } from "./production";
 export const stages = [
   "故事概要",
   "全剧分集规划",
-  "第一集剧本",
+  "单集剧本",
   "定妆与资产",
   "分镜预览",
   "正式镜头",
   "后期成片",
+  "完整故事稿",
+  "文字分镜",
 ];
 export const roles = [
   "主模型",
@@ -169,6 +171,7 @@ export type Task = {
   id: string;
   projectId: string;
   stage: number;
+  episode?: number;
   title: string;
   role: string;
   status: string;

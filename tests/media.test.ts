@@ -1,3 +1,4 @@
+import { seedSeries, approveFixture, scriptFixture } from "./fixtures/series";
 import { test, expect, afterEach } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -285,6 +286,7 @@ test("定妆→动态分镜→视频→音乐字幕成片完整流程，产物�
             name: "主角",
             kind: "character",
             prompt: "绿色外套的动漫角色",
+            libraryId: f.store.assetLibrary(f.project.id)[0]?.libraryId,
           },
         ],
         voices: [{ character: "主角", voice: "alloy", sampleText: "你好" }],
@@ -329,18 +331,21 @@ test("定妆→动态分镜→视频→音乐字幕成片完整流程，产物�
   };
   const runtime = new Runtime(f.store, f.root, generator);
   f.resource.runtime = runtime;
-  for (const stage of [0, 1, 2]) {
-    const t = f.store.one<Task>("SELECT * FROM tasks WHERE stage=?", stage)!;
-    f.store.updateTask(t.id, t.revision, "approved");
-    const a = f.store.publish(
-      t.id,
-      t.revision,
-      "已确认剧本" + timingFixture(2),
-    );
-    f.store.db.run("UPDATE artifacts SET status='approved' WHERE id=?", [a.id]);
-  }
+  seedSeries(f.store, f.project.id);
+  approveFixture(f.store, f.project.id, 2, scriptFixture(1, 2), 1);
+  const shotPlan = await generator({} as Connection, "你是分镜 Agent");
+  approveFixture(
+    f.store,
+    f.project.id,
+    8,
+    JSON.stringify({ type: "shot-plan", data: JSON.parse(shotPlan) }),
+    1,
+  );
   for (const stage of [3, 4, 5, 6]) {
-    const t = f.store.one<Task>("SELECT * FROM tasks WHERE stage=?", stage)!;
+    const t = f.store.one<Task>(
+      "SELECT * FROM tasks WHERE stage=? AND episode=1",
+      stage,
+    )!;
     f.store.updateTask(t.id, t.revision, "ready");
     runtime.start(t.id, t.revision);
     for (let n = 0; n < 1500 && runtime.active.has(t.id); n++)
@@ -354,6 +359,29 @@ test("定妆→动态分镜→视频→音乐字幕成片完整流程，产物�
     )!;
     f.store.approve(t.id, current.revision, a.id);
   }
+  const beforeReuse = f.counts().submissions;
+  approveFixture(f.store, f.project.id, 2, scriptFixture(2, 2), 2);
+  approveFixture(
+    f.store,
+    f.project.id,
+    8,
+    JSON.stringify({ type: "shot-plan", data: JSON.parse(shotPlan) }),
+    2,
+  );
+  const secondAssets = f.store
+    .tasks(f.project.id)
+    .find((t) => t.stage === 3 && t.episode === 2)!;
+  runtime.start(secondAssets.id, secondAssets.revision);
+  for (let n = 0; n < 500 && runtime.active.has(secondAssets.id); n++)
+    await Bun.sleep(20);
+  expect(f.store.task(secondAssets.id).status).toBe("awaiting_user");
+  expect(f.counts().submissions).toBe(beforeReuse);
+  const reused = f.store.one<Artifact>(
+    "SELECT * FROM artifacts WHERE taskId=? AND status='reviewed' ORDER BY rowid DESC LIMIT 1",
+    secondAssets.id,
+  )!;
+  f.store.approve(secondAssets.id, secondAssets.revision, reused.id);
+  expect(f.store.assetLibrary(f.project.id)).toHaveLength(1);
   const final = f.store.one<Artifact>(
     "SELECT a.* FROM artifacts a JOIN tasks t ON t.id=a.taskId WHERE t.stage=6 AND a.status='approved'",
   )!;
@@ -379,3 +407,101 @@ test("定妆→动态分镜→视频→音乐字幕成片完整流程，产物�
   expect(rerender.exportId).toBeTruthy();
   expect(f.counts().submissions).toBe(count);
 }, 60000);
+
+test("动态分镜应用用户和审核反馈，清除旧媒体引用；无反馈直接复用文字分镜", async () => {
+  const f = await fixture();
+  const { MediaPipeline } = await import("../apps/server/media-pipeline");
+  const task = f.store.tasks(f.project.id).find((t) => t.stage === 4)!;
+  const plan = {
+    summary: "文字分镜",
+    shots: [1, 2].map((n) => ({
+      id: `s${n}`,
+      title: "原镜头",
+      prompt: "挥手",
+      duration: 1,
+      beatId: `B${n}`,
+      sceneId: "scene1",
+      assetIds: ["hero"],
+      dialogue: "",
+      route: "separate",
+    })),
+  };
+  const upstream = [
+    {
+      taskId: task.id,
+      content: JSON.stringify({ type: "shot-plan", data: plan }),
+    },
+    {
+      taskId: task.id,
+      content: JSON.stringify({
+        type: "assets",
+        data: {
+          summary: "资产",
+          assets: [
+            {
+              id: "hero",
+              name: "主角",
+              kind: "character",
+              prompt: "主角",
+              imageId: "asset-image",
+            },
+          ],
+          voices: [],
+        },
+      }),
+    },
+  ] as Artifact[];
+  const prompts: string[] = [];
+  const pipeline = new MediaPipeline({
+    store: f.store,
+    call: async (
+      _task: Task,
+      _attempt: string,
+      _text: Connection,
+      prompt: string,
+    ) => {
+      prompts.push(prompt);
+      return JSON.stringify({
+        ...plan,
+        shots: plan.shots.map((s) => ({
+          ...s,
+          title: "修改后镜头",
+          prompt: "点头",
+          imageId: "stale-image",
+          audioId: "stale-audio",
+          videoId: "stale-video",
+        })),
+      });
+    },
+    media: {
+      connection: () => ({}),
+      files: { render: async () => ({ exportId: "preview" }) },
+    },
+  } as unknown as Runtime);
+  for (const feedback of ["", "用户要求：改为点头", "审核未通过：改为点头"]) {
+    const result = await pipeline.produce(
+      task,
+      "test",
+      f.c,
+      upstream,
+      feedback,
+      null,
+      new AbortController().signal,
+      () => {},
+    );
+    const shots = (result.data as typeof plan).shots;
+    expect(shots[0].title).toBe(feedback ? "修改后镜头" : "原镜头");
+    expect(shots[0]).toMatchObject({
+      imageId: "asset-image",
+      draftImage: true,
+    });
+    expect(shots[0]).not.toHaveProperty("audioId");
+    expect(shots[0]).not.toHaveProperty("videoId");
+    if (feedback) {
+      expect(prompts.at(-1)).toContain(feedback);
+      expect(prompts.at(-1)).toContain("文字分镜");
+    }
+  }
+  expect(prompts).toHaveLength(2);
+  expect(plan.shots[0].title).toBe("原镜头");
+});

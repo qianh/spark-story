@@ -127,11 +127,12 @@ test("制作规则保存保留概要和历史产物、重置分集及下游；�
     const a = s.publish(tasks[0].id, 1, "已确认概要");
     s.db.run("UPDATE artifacts SET status='approved' WHERE id=?", [a.id]);
     s.updateTask(tasks[0].id, 1, "approved");
+    s.updateTask(tasks[1].id, 1, "ready");
     s.saveProductionRules(p.id, { ...rules, narrative: "suspense" });
     expect(s.task(tasks[0].id).revision).toBe(1);
     expect(s.task(tasks[1].id).status).toBe("ready");
     expect(s.productionRules(p.id).narrative).toBe("suspense");
-    s.updateTask(tasks[1].id, 2, "running");
+    s.updateTask(tasks[1].id, s.task(tasks[1].id).revision, "running");
     expect(() => s.saveProductionRules(p.id, rules)).toThrow("执行");
   } finally {
     s.db.close();

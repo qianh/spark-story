@@ -201,7 +201,7 @@ export class MediaPipeline {
           : undefined,
       )
       .find(Boolean);
-    const context = `画幅 ${p.aspect}，风格 ${style.prompt}。${productionPrompt(rules, task.stage)}\n资产必须分开记录 identity（不变外貌）与 state（服装、年龄、伤势、能力阶段）。分镜必须额外提供 beatId（剧本时间清单中的节拍 ID）、sceneId、imagePrompt（静态构图，不含连续动作）、motionPrompt（单一明确动作、运动方向与结果）、camera（景别、机位、轴线、视线）、startState、endState。prompt 保留镜头摘要。每镜头有叙事用途，所有镜头按节拍连续排列，同一节拍镜头时长之和严格等于节拍时长。动作需分清原因、执行和反应；保持跨镜头人物位置、视线、服饰伤势一致。strategy 仅支持 single（单段）或 tail-chain（超过供应商时限时以前段实际末帧接续），不要虚构其他供应商能力。用户要求：${feedback}。已确认上游：${JSON.stringify(upstream.map((a) => a.content))}`;
+    const context = `画幅 ${p.aspect}，风格 ${style.prompt}。每集最终时长 ${rules.minSeconds}～${rules.maxSeconds} 秒；具体镜头以本集已确认剧本和文字分镜为准，不强制场景数量、反应比例或叙事模板。\n资产必须分开记录 identity（不变外貌）与 state（服装、年龄、伤势、能力阶段）。分镜必须额外提供 beatId（剧本时间清单中的节拍 ID）、sceneId、imagePrompt（静态构图，不含连续动作）、motionPrompt（单一明确动作、运动方向与结果）、camera（景别、机位、轴线、视线）、startState、endState。prompt 保留镜头摘要。每镜头有叙事用途，所有镜头按节拍连续排列，同一节拍镜头时长之和严格等于节拍时长。动作需分清原因、执行和反应；保持跨镜头人物位置、视线、服饰伤势一致。strategy 仅支持 single（单段）或 tail-chain（超过供应商时限时以前段实际末帧接续），不要虚构其他供应商能力。用户要求：${feedback}。已确认上游：${JSON.stringify(upstream.map((a) => a.content))}`;
     const checkShots = (shots: Storyboard["shots"]) => {
       const issues = validateShotTiming(shots, rules, episode);
       if (issues.length) throw Error(`制作验收不通过：${issues.join("；")}`);
@@ -251,14 +251,36 @@ export class MediaPipeline {
         voices = (data.voices || []).map((v: any) => v.voice_id);
         if (!voices.length) throw Error("语音供应商未返回可用声音");
       }
+      const library = store.assetLibrary(task.projectId);
+      const approvedVoices = store.approvedVoices(task.projectId, voice.id);
       const data: AssetPlan = assetPlanSchema.parse(
         edited?.type === "assets"
           ? edited.data
           : await ask(
-              `你是角色与资产 Agent。提取第一集实际需要的角色、场景、道具，生成定妆提示词；角色图是单角色，不把多人拼在同一图。为每个角色提供 2 个不同声音的试听候选（不足则 1 个），从可用 voice ID ${JSON.stringify(voices.slice(0, 30))} 选择。返回 JSON：{"summary":"说明","assets":[{"id":"稳定ID","name":"名字","kind":"character或scene或prop","prompt":"完整图像生成要求"}],"voices":[{"character":"角色名字","voice":"可用ID","sampleText":"该角色一句适合试听的台词"}]}。不要虚构 imageId、audioId。`,
+              `你是角色与资产 Agent。提取本集实际需要的角色、场景、道具，生成定妆提示词；角色图是单角色，不把多人拼在同一图。为每个角色提供 2 个不同声音的试听候选（不足则 1 个），从可用 voice ID ${JSON.stringify(voices.slice(0, 30))} 选择。返回 JSON：{"summary":"说明","assets":[{"id":"稳定ID","name":"名字","kind":"character或scene或prop","prompt":"完整图像生成要求"}],"voices":[{"character":"角色名字","voice":"可用ID","sampleText":"该角色一句适合试听的台词"}]}。从文字分镜 assetIds 提取全部需求并保持 ID 一致。已有资产可通过 libraryId 引用，必须选择外观与状态都匹配的版本；新增状态创建独立资产，并用 baseLibraryId 指定基础参考版本，不覆盖旧版。每项填写 identity 与 state。不要虚构 imageId、audioId。可复用库：${JSON.stringify(library)}。`,
             ),
       );
+      const shotPlan = bundleAt("shot-plan");
+      for (const id of shotPlan?.shots.flatMap((s: any) => s.assetIds) || [])
+        if (!data.assets.some((a) => a.id === id))
+          throw Error(`制作验收：文字分镜需要的资产 ${id} 未提供`);
       for (const asset of data.assets) {
+        const base = asset.baseLibraryId
+          ? library.find((a) => a.libraryId === asset.baseLibraryId)
+          : undefined;
+        if (asset.baseLibraryId && (!base || base.kind !== asset.kind))
+          throw Error("制作验收：基础资产引用不存在或类型不同");
+        if (asset.libraryId) {
+          const saved = library.find((a) => a.libraryId === asset.libraryId);
+          if (!saved) throw Error("制作验收：引用的资产版本不属于此作品");
+          if (
+            asset.identity !== saved.identity ||
+            asset.state !== saved.state ||
+            asset.kind !== saved.kind
+          )
+            throw Error("制作验收：复用资产的身份或状态已改变，请创建新版本");
+          asset.imageId = saved.imageId;
+        }
         this.assertCurrent(task, signal);
         if (!asset.imageId)
           asset.imageId = await media.ensure(
@@ -266,12 +288,23 @@ export class MediaPipeline {
             task.revision,
             "image",
             `${style.prompt}。${asset.prompt}。固定身份：${asset.identity}。当前状态：${asset.state}`,
-            [],
+            base?.imageId ? [base.imageId] : [],
             { aspect: p.aspect },
             signal,
           );
         saveProgress("assets", data);
       }
+      const selectedCharacters = new Set<string>();
+      data.voices = data.voices.filter((sample) => {
+        const saved = approvedVoices.find(
+          (v) => v.character === sample.character,
+        );
+        if (!saved) return true;
+        if (selectedCharacters.has(sample.character)) return false;
+        selectedCharacters.add(sample.character);
+        Object.assign(sample, saved);
+        return true;
+      });
       for (const sample of data.voices) {
         this.assertCurrent(task, signal);
         if (!voices.includes(sample.voice))
@@ -297,11 +330,21 @@ export class MediaPipeline {
       const data: Storyboard = storyboardSchema.parse(
         edited?.type === "storyboard"
           ? edited.data
-          : await ask(
-              `你是分镜 Agent。把第一集完整拆为镜头，不限制总镜头数。每个镜头有明确画面和动作、时长、资产引用。出镜说话标 route=lipsync；旁白/画外音标 separate；原生音画仅在项目要求时标 native。每镜头最多一位出镜发言者，轮流对白拆镜头。声音使用上游 voices 中角色的首个候选（用户可排序选择）。返回 JSON {"summary":"说明","shots":[{"id":"稳定镜头ID","title":"镜头名","prompt":"完整画面动作、景别与运镜","duration":6,"assetIds":["上游asset.id"],"dialogue":"台词或空字符串","speaker":"角色名","voice":"声音ID","route":"separate或lipsync或native"}]}。不要编造素材文件 ID。`,
-            ),
+          : (!feedback.trim() && bundleAt("shot-plan")) ||
+              (await ask(
+                `你是分镜 Agent。以已确认文字分镜为基础，应用用户要求及审核返工意见，返回修改后的完整镜头方案；保留未涉及的内容，遵守剧本节拍和现有资产约束。返回 JSON {"summary":"说明","shots":[{"id":"镜头ID","title":"标题","prompt":"画面动作","duration":6,"assetIds":[],"dialogue":"台词","speaker":"角色","route":"separate"}]}。不要返回 imageId、audioId、videoId、previewId 等旧素材文件 ID，修改后的媒体由系统重新生成。`,
+              )),
       );
       checkShots(data.shots);
+      if (edited?.type !== "storyboard" && feedback.trim()) {
+        delete data.previewId;
+        for (const shot of data.shots) {
+          delete shot.imageId;
+          delete shot.audioId;
+          delete shot.videoId;
+          shot.draftImage = false;
+        }
+      }
       for (const shot of data.shots) {
         this.assertCurrent(task, signal);
         const refs = shot.assetIds.map((id) => {

@@ -1,3 +1,10 @@
+import {
+  structured,
+  storySchema,
+  storyOutlineSchema,
+  seriesPlanSchema,
+  chapterSchema,
+} from "../../packages/series";
 import React, { memo } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -14,6 +21,89 @@ export const MarkdownContent = memo(function MarkdownContent({
   content: string;
   rules?: ProductionRules;
 }) {
+  const story = structured(content, storySchema);
+  const outline = structured(content, storyOutlineSchema);
+  const plan = structured(content, seriesPlanSchema);
+  if (story)
+    return (
+      <article className="artifact-text markdown-content">
+        <h2>完整故事稿</h2>
+        <MarkdownContent content={story.bible} />
+        {story.chapters.map((c) => (
+          <section key={c.id}>
+            <h2>
+              {c.id} · {c.title}
+            </h2>
+            <MarkdownContent content={c.content} />
+            <details>
+              <summary>衔接与故事段落索引</summary>
+              <p>{c.continuity}</p>
+              {c.beats.map((b) => (
+                <p key={b.id}>
+                  {b.id} · {b.description}
+                </p>
+              ))}
+            </details>
+          </section>
+        ))}
+      </article>
+    );
+  if (outline)
+    return (
+      <article className="artifact-text markdown-content">
+        <h2>故事结构</h2>
+        <MarkdownContent content={outline.bible} />
+        {outline.chapters.map((c) => (
+          <section key={c.id}>
+            <h3>
+              {c.id} · {c.title}
+            </h3>
+            <p>{c.synopsis}</p>
+          </section>
+        ))}
+      </article>
+    );
+  if (plan)
+    return (
+      <article className="artifact-text markdown-content">
+        <h2>全剧分集规划 · {plan.episodes.length} 集</h2>
+        <p>{plan.rationale}</p>
+        {plan.episodes.map((ep) => (
+          <section key={ep.id}>
+            <h3>
+              {ep.id} · {ep.title}
+            </h3>
+            <p>{ep.summary}</p>
+            <p>开始：{ep.opening}</p>
+            <p>变化：{ep.change}</p>
+            <p>结束：{ep.ending}</p>
+            <p>
+              粗估 {ep.estimatedSeconds} 秒 · {ep.timingReason}
+            </p>
+            <small>来源：{ep.sourceBeatIds.join("、")}</small>
+          </section>
+        ))}
+      </article>
+    );
+  const chapter = structured(content, chapterSchema);
+  if (chapter)
+    return (
+      <article className="artifact-text markdown-content">
+        <h2>
+          {chapter.id} · {chapter.title}
+        </h2>
+        <MarkdownContent content={chapter.content} />
+        <details className="story-meta">
+          <summary>衔接与故事段落索引</summary>
+          <p>{chapter.continuity}</p>
+          {chapter.beats.map((b) => (
+            <p key={b.id}>
+              {b.id} · {b.description}
+            </p>
+          ))}
+        </details>
+      </article>
+    );
   const timing = timingManifest(content);
   const purposes: Record<string, string> = {
     hook: "开场钩子",
@@ -74,7 +164,8 @@ export const MarkdownContent = memo(function MarkdownContent({
                     </p>
                     {audit.issues.length > 0 && (
                       <p role="status">
-                        需要重新规划：{audit.issues.join("；")}
+                        节奏参考（不作为强制返工条件）：
+                        {audit.issues.join("；")}
                       </p>
                     )}
                   </>

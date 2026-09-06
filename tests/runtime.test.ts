@@ -1,3 +1,9 @@
+import {
+  storyFixture,
+  planFixture,
+  approveFixture,
+  seriesResponse,
+} from "./fixtures/series";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -88,12 +94,13 @@ test("超时规划即使主控总是通过也不能过关，旧规划不能启�
   s.updateTask(t.id, 1, "approved");
   const a = s.publish(t.id, 1, "概要");
   s.db.run("UPDATE artifacts SET status='approved' WHERE id=?", [a.id]);
+  approveFixture(s, t.projectId, 7, JSON.stringify(storyFixture));
   const plan = s.one<Task>("SELECT * FROM tasks WHERE stage=1")!;
   s.updateTask(plan.id, 1, "ready");
   r.start(plan.id, 1);
   await waitFor(() => !r.active.has(plan.id));
   expect(s.task(plan.id).status).toBe("needs_user");
-  expect(calls).toBe(5);
+  expect(calls).toBe(3);
   expect(
     s.list(
       "SELECT id FROM artifacts WHERE taskId=? AND status='reviewed'",
@@ -104,28 +111,27 @@ test("超时规划即使主控总是通过也不能过关，旧规划不能启�
   const legacy = s.publish(plan.id, 1, "旧规划");
   s.db.run("UPDATE artifacts SET status='approved' WHERE id=?", [legacy.id]);
   const script = s.one<Task>("SELECT * FROM tasks WHERE stage=2")!;
-  expect(() => r.start(script.id, script.revision)).toThrow("重新规划");
+  expect(() => r.start(script.id, script.revision)).toThrow("前置");
 });
 test("分集规划通过后第一集才可执行，并将确认的规划传入剧本上下文", async () => {
   const prompts: string[] = [];
   const { s, r, t } = await fixture(async (_c, p) => {
     prompts.push(p);
-    return p.startsWith("你是主控")
-      ? '{"pass":true,"feedback":"通过"}'
-      : "# 全剧分集规划\n第1集：雨中相遇\n第2集：谜底揭晓" + timingFixture();
+    return seriesResponse(p);
   });
   s.updateTask(t.id, 1, "approved");
   const a = s.publish(t.id, 1, "整部故事概要");
   s.db.run("UPDATE artifacts SET status='approved' WHERE id=?", [a.id]);
+  approveFixture(s, t.projectId, 7, JSON.stringify(storyFixture));
   const plan = s.one<Task>("SELECT * FROM tasks WHERE stage=1")!,
     script = s.one<Task>("SELECT * FROM tasks WHERE stage=2")!;
   s.updateTask(plan.id, 1, "ready");
   expect(() => r.start(script.id, 1)).toThrow("前置");
   r.start(plan.id, 1);
   await waitFor(() => !r.active.has(plan.id));
-  const planPrompt = prompts.find((p) => p.startsWith("你是动漫"))!;
-  expect(planPrompt).toContain("根据故事容量");
-  expect(planPrompt).toContain("逐集");
+  const planPrompt = prompts.find((p) => p.startsWith("你是分集规划 Agent"))!;
+  expect(planPrompt).toContain("不重写全剧");
+  expect(planPrompt).toContain("sourceBeatIds");
   expect(planPrompt).not.toContain("写第一集的完整分场剧本");
   const reviewed = s.one<any>(
     "SELECT * FROM artifacts WHERE taskId=? AND status='reviewed'",
@@ -134,12 +140,10 @@ test("分集规划通过后第一集才可执行，并将确认的规划传入�
   s.approve(plan.id, s.task(plan.id).revision, reviewed.id);
   r.start(script.id, s.task(script.id).revision);
   await waitFor(() => !r.active.has(script.id));
-  const scriptPrompt = prompts.find(
-    (p) => p.startsWith("你是动漫") && p.includes("写第一集的完整分场剧本"),
-  )!;
-  expect(scriptPrompt).toContain("第一集");
+  const scriptPrompt = prompts.find((p) => p.startsWith("你是单集剧情 Agent"))!;
+  expect(scriptPrompt).toContain("EP001");
   expect(scriptPrompt).toContain("雨中相遇");
-  expect(scriptPrompt).toContain("已确认分集规划");
+  expect(scriptPrompt).toContain("sourceStepIds");
 });
 test("完成前已能看到草稿，主控审核不覆盖正文，旧修订流式回调失效", async () => {
   let finish!: () => void;

@@ -1,3 +1,14 @@
+import { MarkdownContent } from "./MarkdownContent";
+import {
+  stageOrder,
+  globalStages,
+  isMediaStage,
+  rank,
+  structured,
+  storySchema,
+  storyOutlineSchema,
+  chapterSchema,
+} from "../../packages/series";
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -50,7 +61,12 @@ import "./media.css";
 import { BundleView, MediaJobs, MediaLibrary } from "./MediaStudio";
 import type { MediaFile, MediaJob } from "../../packages/media";
 import type { TaskProgress } from "../../packages/progress";
-import { TaskActivity, LiveDraft } from "./TaskActivity";
+import {
+  TaskActivity,
+  LiveDraft,
+  StoryProgress,
+  latestCheckpoints,
+} from "./TaskActivity";
 import "./reading.css";
 import {
   ProductionFields,
@@ -71,9 +87,11 @@ type Board = {
   planningCheckpoints?: {
     taskId: string;
     revision: number;
+    kind: string;
     status: string;
     content: string;
   }[];
+  episodes?: { number: number; id: string; title: string }[];
   tasks: Task[];
   artifacts: Artifact[];
   events: Event[];
@@ -109,6 +127,8 @@ const stageIcons = [
   Layers,
   Film,
   AudioLines,
+  BookOpen,
+  Layers,
 ];
 async function api<T = any>(
   path: string,
@@ -143,9 +163,11 @@ function App() {
   const [modal, setModal] = useState("");
   const [workspace, setWorkspace] = useState<string | null>(null);
   const [stage, setStage] = useState(0);
+  const [selectedEpisode, setSelectedEpisode] = useState(1);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [chat, setChat] = useState("");
+  const [chapterInstruction, setChapterInstruction] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [offline, setOffline] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -206,16 +228,52 @@ function App() {
       setBusy(false);
     }
   }
+  const episode = board?.episodes?.some((e) => e.number === selectedEpisode)
+    ? selectedEpisode
+    : board?.episodes?.[0]?.number || 1;
+  const visibleTasks =
+    board?.tasks.filter((t) => !t.episode || t.episode === episode) || [];
+  const taskAt = (stage: number) => visibleTasks.find((t) => t.stage === stage);
   const task = board?.tasks.find((t) => t.id === workspace);
+  const nextTask =
+    task &&
+    board?.tasks.find(
+      (t) =>
+        rank(t.stage) === rank(task.stage) + 1 &&
+        (!t.episode || t.episode === (task.episode || episode)),
+    );
   const artifact = task
     ? board?.artifacts.find(
         (a) => a.taskId === task.id && a.revision === task.revision,
       )
     : null;
+  const liveContent =
+    (task &&
+      board?.progress?.find(
+        (p) =>
+          p.taskId === task.id &&
+          p.revision === task.revision &&
+          p.phase === "generate",
+      )?.content) ||
+    "";
+  const storyCheckpoints = task
+    ? latestCheckpoints(
+        board?.planningCheckpoints || [],
+        task.id,
+        task.revision,
+      )
+    : [];
+  const checkpointStatus = (status: string) =>
+    ({ reviewed: "已通过", rejected: "未通过", candidate: "待审核" }[status] ||
+    "待处理");
+  const liveProduct =
+    structured(liveContent, storySchema) ||
+    structured(liveContent, storyOutlineSchema) ||
+    structured(liveContent, chapterSchema);
   const activeTask =
-    board?.tasks.find((t) =>
+    visibleTasks.find((t) =>
       ["running", "reviewing", "coordinating"].includes(t.status),
-    ) || board?.tasks.find((t) => t.status !== "approved");
+    ) || visibleTasks.find((t) => t.status !== "approved");
   const pending =
     board?.tasks.filter((t) =>
       ["awaiting_user", "needs_user"].includes(t.status),
@@ -364,7 +422,7 @@ function App() {
             )}
           </div>
           <div className="top-actions">
-            <span className="version-label">LOCAL / v0.2</span>
+            <span className="version-label">LOCAL / v0.3</span>
             <button
               className="icon-button"
               aria-label="刷新"
@@ -410,9 +468,10 @@ function App() {
                     <div>
                       <p className="eyebrow">
                         AGENT WORKSPACE ·{" "}
-                        {String(task.stage + 1).padStart(2, "0")}
+                        {String(rank(task.stage) + 1).padStart(2, "0")}
                       </p>
                       <h1>
+                        {task.episode ? `第 ${task.episode} 集 · ` : ""}
                         {task.title}
                         <span className={"status " + task.status}>
                           {states[task.status]}
@@ -466,25 +525,58 @@ function App() {
                   {task.error && <div className="notice">{task.error}</div>}
                   {task.stage === 1 && (
                     <div className="notice">
-                      先展开全剧情节单元，再按对白、动作与人物反应的表演容量拆集。不预设集数，不把整段成长或多个重大事件压成一集。规划通过后，再写第一集完整剧本。
+                      依据已确认完整故事拆集，只确定每集的故事边界、变化与粗估时长。确认后可选择各集独立制作。
                     </div>
                   )}
-                  {task.status === "approved" &&
-                    board.tasks[task.stage + 1] && (
-                      <div className="notice">
-                        此阶段已确认。
-                        <button
-                          className="text-button"
-                          onClick={() => {
-                            setWorkspace(board.tasks[task.stage + 1].id);
-                            setStage(task.stage + 1);
-                            setEditing(false);
-                          }}
-                        >
-                          进入{board.tasks[task.stage + 1].title} →
-                        </button>
-                      </div>
-                    )}
+                  {task.status === "approved" && nextTask && (
+                    <div className="notice">
+                      此阶段已确认。
+                      <button
+                        className="text-button"
+                        onClick={() => {
+                          setWorkspace(nextTask.id);
+                          setStage(nextTask.stage);
+                          setEditing(false);
+                        }}
+                      >
+                        进入{nextTask.title} →
+                      </button>
+                    </div>
+                  )}
+                  {board.events.find(
+                    (e) => e.taskId === task.id && e.type === "workflow.part",
+                  ) && (
+                    <p className="notice">
+                      最近步骤：
+                      {
+                        board.events.find(
+                          (e) =>
+                            e.taskId === task.id && e.type === "workflow.part",
+                        )?.message
+                      }
+                    </p>
+                  )}
+                  {task.stage === 7 && (
+                    <StoryProgress
+                      outline={
+                        structured(
+                          storyCheckpoints.find((p) => p.kind === "故事结构")
+                            ?.content || "",
+                          storyOutlineSchema,
+                        ) || undefined
+                      }
+                      checkpoints={storyCheckpoints}
+                      currentKind={
+                        board.events
+                          .find(
+                            (e) =>
+                              e.taskId === task.id &&
+                              e.type.startsWith("workflow.part"),
+                          )
+                          ?.message.match(/^(故事结构|章节 CH\d+)/)?.[1]
+                      }
+                    />
+                  )}
                   <TaskActivity
                     task={task}
                     progress={board.progress?.find((p) => p.taskId === task.id)}
@@ -501,6 +593,55 @@ function App() {
                         )?.content
                       }
                     />
+                  )}
+                  {task.stage === 7 && (
+                    <section className="panel">
+                      <h3>章节检查点</h3>
+                      <p>已通过的章节会保留；中断后从未完成片段继续。</p>
+                      <textarea
+                        aria-label="章节修改要求"
+                        placeholder="先填写具体修改要求，再选择需要修改的章节。"
+                        value={chapterInstruction}
+                        onChange={(e) => setChapterInstruction(e.target.value)}
+                      />
+                      {storyCheckpoints.map((p, i) => (
+                        <details
+                          className="checkpoint-block"
+                          key={p.kind}
+                          open={i === 0}
+                        >
+                          <summary>
+                            {p.kind} · {checkpointStatus(p.status)}
+                          </summary>
+                          <MarkdownContent content={p.content} />
+                          {p.kind?.startsWith("章节 ") && (
+                            <button
+                              className="button"
+                              disabled={
+                                busy ||
+                                !chapterInstruction.trim() ||
+                                [
+                                  "running",
+                                  "reviewing",
+                                  "coordinating",
+                                ].includes(task.status)
+                              }
+                              onClick={() =>
+                                act(() =>
+                                  api(`/tasks/${task.id}/repair-chapter`, {
+                                    revision: task.revision,
+                                    chapterId: p.kind.slice(3),
+                                    instruction: chapterInstruction,
+                                  }),
+                                )
+                              }
+                            >
+                              修改本章及后续衔接
+                            </button>
+                          )}
+                        </details>
+                      ))}
+                    </section>
                   )}
                   <div className="workspace-grid">
                     <section className="panel artifact-panel">
@@ -554,18 +695,28 @@ function App() {
                             保存为新版本
                           </button>
                         </div>
-                      ) : task.stage < 3 && task.status === "running" ? (
-                        <LiveDraft
-                          key={task.id + ":" + task.revision}
-                          content={
-                            board.progress?.find(
-                              (p) =>
-                                p.taskId === task.id &&
-                                p.revision === task.revision &&
-                                p.phase === "generate",
-                            )?.content || ""
-                          }
-                        />
+                      ) : !isMediaStage(task.stage) &&
+                        task.status === "running" ? (
+                        <>
+                          <LiveDraft
+                            key={task.id + ":" + task.revision}
+                            content={liveContent}
+                          />
+                          {task.stage === 7 &&
+                            storyCheckpoints[0] &&
+                            !liveProduct && (
+                              <>
+                                <p className="muted">
+                                  {storyCheckpoints[0].kind} ·{" "}
+                                  {checkpointStatus(storyCheckpoints[0].status)}
+                                  。下一段生成完成前，仍可在此阅读。
+                                </p>
+                                <MarkdownContent
+                                  content={storyCheckpoints[0].content}
+                                />
+                              </>
+                            )}
+                        </>
                       ) : artifact ? (
                         <BundleView
                           production={board.production}
@@ -964,7 +1115,7 @@ function App() {
                   {board && (
                     <MediaLibrary
                       files={board.mediaFiles || []}
-                      task={board.tasks[3]}
+                      task={taskAt(3)!}
                       act={act}
                       onUpdated={reload}
                     />
@@ -1082,7 +1233,7 @@ function App() {
                             className="text-button"
                             onClick={() => {
                               setWorkspace(
-                                board.tasks.find(
+                                visibleTasks.find(
                                   (t) =>
                                     t.stage ===
                                     [0, 0, 4, 3, 4, 5, 3, 6, 6, 1][i],
@@ -1191,7 +1342,7 @@ function App() {
                         {currentTemplate?.name}
                         <span className="divider">/</span>
                         {board.project.aspect} 画幅
-                        <span className="divider">/</span>第一集制作
+                        <span className="divider">/</span>第 {episode} 集制作
                         <span className="divider">/</span>
                         <button
                           className="text-button"
@@ -1253,7 +1404,7 @@ function App() {
                       <small>制作进度</small>
                       <strong>
                         {
-                          board.tasks.filter((t) => t.status === "approved")
+                          visibleTasks.filter((t) => t.status === "approved")
                             .length
                         }
                         <span> / {stages.length} 阶段</span>
@@ -1262,7 +1413,7 @@ function App() {
                         <i
                           style={{
                             width:
-                              (board.tasks.filter(
+                              (visibleTasks.filter(
                                 (t) => t.status === "approved",
                               ).length /
                                 stages.length) *
@@ -1304,26 +1455,53 @@ function App() {
                       <span className="tiny-dot" /> 所有改动自动保存
                     </span>
                   </div>
+                  <div className="notice">
+                    <label>
+                      制作集数：{" "}
+                      <select
+                        aria-label="制作集数"
+                        value={episode}
+                        onChange={(e) => {
+                          setSelectedEpisode(Number(e.target.value));
+                          setWorkspace("");
+                        }}
+                      >
+                        {board.episodes?.length ? (
+                          board.episodes.map((ep) => (
+                            <option key={ep.number} value={ep.number}>
+                              {ep.id} · {ep.title}
+                            </option>
+                          ))
+                        ) : (
+                          <option value={1}>分集确认后可选择</option>
+                        )}
+                      </select>
+                    </label>
+                    <span>
+                      {" "}
+                      全剧故事先确认；本集各阶段单独审核，已确认资产跨集复用。
+                    </span>
+                  </div>
                   <div className="stage-strip">
-                    {stages.map((s, i) => (
+                    {stageOrder.map((i) => (
                       <button
-                        key={s}
+                        key={i}
                         className={
                           (stage === i ? "selected " : "") +
-                          (board.tasks[i]?.status === "approved" ? "done" : "")
+                          (taskAt(i)?.status === "approved" ? "done" : "")
                         }
                         onClick={() => setStage(i)}
                       >
                         <span>
-                          {board.tasks[i]?.status === "approved" ? (
+                          {taskAt(i)?.status === "approved" ? (
                             <Check size={14} />
                           ) : (
-                            String(i + 1).padStart(2, "0")
+                            String(rank(i) + 1).padStart(2, "0")
                           )}
                         </span>
-                        <strong>{s}</strong>
+                        <strong>{stages[i]}</strong>
                         <small>
-                          {states[board.tasks[i]?.status] || "等待更新"}
+                          {states[taskAt(i)?.status || "blocked"] || "等待更新"}
                         </small>
                       </button>
                     ))}
@@ -1335,7 +1513,7 @@ function App() {
                     </h2>
                     <span className="muted">主控审核 → 你的确认</span>
                   </div>
-                  {board.tasks
+                  {visibleTasks
                     .filter((t) => t.stage === stage)
                     .map((t) => (
                       <button
@@ -1349,7 +1527,7 @@ function App() {
                             strokeWidth: 1,
                           })}
                           <span>
-                            0{stage + 1} /{" "}
+                            {String(rank(stage) + 1).padStart(2, "0")} /{" "}
                             {
                               [
                                 "STORY",
@@ -1359,6 +1537,8 @@ function App() {
                                 "STORYBOARD",
                                 "MOTION",
                                 "FINAL CUT",
+                                "COMPLETE STORY",
+                                "SHOT PLAN",
                               ][stage]
                             }
                           </span>
@@ -1380,11 +1560,13 @@ function App() {
                               [
                                 "从来源整理故事主线、人物关系与世界规则，建立整部作品的创作基础。",
                                 "根据故事容量确定集数，逐集规划事件、人物变化、冲突、悬念与前后衔接。",
-                                "依据已确认的全剧分集规划，细写第一集的完整分场剧本，不提前消耗后续剧情。",
+                                "依据已确认的全剧分集规划，细写本集的完整分场剧本，不提前消耗后续剧情。",
                                 "确定角色外观、声音与主要场景，建立一致的视觉资产。",
                                 "把剧本转为镜头语言，使用动态预览检查节奏。",
                                 "依据确认分镜生成关键帧、视频与正式配音。",
                                 "完成镜头剪辑、音乐音效、字幕和成片导出。",
+                                "按章节写完整部故事，完善人物经历、事件经过、伏笔与结局。章节分别审核保存，再整体确认。",
+                                "依据本集剧本确定机位、动作、镜头衔接和资产需求，暂不生成图片。",
                               ][stage]
                             }
                           </p>

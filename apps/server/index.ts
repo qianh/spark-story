@@ -1,3 +1,4 @@
+import { isMediaStage } from "../../packages/series";
 import { resolve, join, sep } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
 import { Store } from "./store";
@@ -105,7 +106,7 @@ const server = Bun.serve({
           ),
           connections: store.connections(),
           bindings: store.list("SELECT * FROM bindings"),
-          version: "0.2.0",
+          version: "0.3.0",
           capabilities: { text: true, media: true },
         });
       if (path === "/api/projects" && req.method === "POST")
@@ -165,6 +166,25 @@ const server = Bun.serve({
         );
         return json({ ok: true });
       }
+      const chapterRepair = path.match(
+        /^\/api\/tasks\/([^/]+)\/repair-chapter$/,
+      );
+      if (chapterRepair && req.method === "POST") {
+        const value = z
+          .object({
+            revision: z.number().int().positive(),
+            chapterId: z.string().min(1),
+            instruction: z.string().trim().min(1).max(10000),
+          })
+          .parse(await body(req));
+        runtime.repairChapter(
+          chapterRepair[1],
+          value.revision,
+          value.chapterId,
+          value.instruction,
+        );
+        return json({ ok: true });
+      }
       const task = path.match(
         /^\/api\/tasks\/([^/]+)\/(start|interrupt|approve|edit)$/,
       );
@@ -190,7 +210,7 @@ const server = Bun.serve({
             .min(1)
             .max(2000000)
             .parse(input.content);
-          if (store.task(task[1]).stage > 2) {
+          if (isMediaStage(store.task(task[1]).stage)) {
             const bundle = mediaBundle(content);
             if (!bundle) throw Error("媒体阶段需要有效的结构化产物");
             const expected = [
@@ -217,6 +237,10 @@ const server = Bun.serve({
           if (t.revision !== r) throw Error("版本已变化");
           runtime.intervene(t.id, r, "");
           const changed = store.task(t.id);
+          store.db.run(
+            "DELETE FROM planning_checkpoints WHERE taskId=? AND revision=?",
+            [t.id, changed.revision],
+          );
           store.publish(t.id, changed.revision, content);
           store.event(
             t.projectId,
