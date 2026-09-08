@@ -213,7 +213,7 @@ test("定妆卡片提供单张重新生成，不进入整体编辑", () => {
       onRetryAsset={() => {}}
     />,
   );
-  expect(html).toContain("重新生成");
+  expect(html).toContain("再抽一张");
   expect(html).toContain("沈不言");
 });
 

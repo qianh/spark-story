@@ -130,7 +130,7 @@ describe("持久任务规则", () => {
     expect(s.visualStyle(p.id).prompt).toContain("赛璐璐");
     s.setVisualTemplate(p.id, "donghua3d");
     expect(s.visualStyle(p.id).id).toBe("donghua3d");
-    expect(s.visualStyle(p.id).prompt).toContain("高细节3D CGI仙侠");
+    expect(s.visualStyle(p.id).prompt).toContain("SHARED STYLE DNA — never change across characters, props, or scenes:");
     const assets = s.one<any>("SELECT * FROM tasks WHERE stage=3")!;
     const rev = assets.revision;
     const row = s.one<{ data: string }>(
@@ -149,10 +149,11 @@ describe("持久任务规则", () => {
       }),
       p.id,
     ]);
-    expect(s.visualStyle(p.id).prompt).toContain("旧画风文本");
+    expect(s.visualStyle(p.id).prompt).toContain("SHARED STYLE DNA — never change across characters, props, or scenes:");
     s.setVisualTemplate(p.id, "donghua3d");
-    expect(s.visualStyle(p.id).prompt).toContain("高细节3D CGI仙侠");
-    expect(s.visualStyle(p.id).version).toBe("xianxia-3d-v8");
+    expect(s.visualStyle(p.id).prompt).toContain("SHARED STYLE DNA — never change across characters, props, or scenes:");
+    expect(s.visualStyle(p.id).version).toBe("xianxia-style-dna-v2");
+    expect(s.visualStyle(p.id).characterModule).toContain("CHARACTER SHEET");
     expect(s.task(assets.id).revision).toBe(rev + 1);
   });
   test("重启保留未知费用并使旧执行失效", () => {

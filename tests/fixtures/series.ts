@@ -78,6 +78,28 @@ export function seedSeries(s: Store, projectId: string) {
 export function seriesResponse(prompt: string) {
   if (prompt.startsWith("你是主控"))
     return JSON.stringify({ pass: true, feedback: "事实和衔接通过" });
+  if (prompt.startsWith("你是外观登记 Agent"))
+    return JSON.stringify({
+      type: "look-registry",
+      entities: [
+        {
+          id: "girl",
+          name: "女孩",
+          kind: "character",
+          variants: [
+            {
+              id: "youth",
+              name: "青年",
+              kind: "growth",
+              identity: "年轻女孩",
+              form: "日常衣装",
+              source: "女孩收到来信",
+              ageBand: "youth",
+            },
+          ],
+        },
+      ],
+    });
   if (prompt.startsWith("你是故事 Agent") && prompt.includes("规划覆盖"))
     return JSON.stringify(outlineFixture);
   if (prompt.startsWith("你是故事 Agent"))

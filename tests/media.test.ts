@@ -248,17 +248,29 @@ test("强制重试跳过完成缓存，只替换一张定妆图", async () => {
       },
     }),
   );
+  f.store.db.run("INSERT INTO bindings VALUES(?,?)", ["主模型", f.c.id]);
   const { MediaPipeline } = await import("../apps/server/media-pipeline");
   const pipeline = new MediaPipeline({
     store: f.store,
     media,
+    call: async () => '{"pass":true,"feedback":"通过"}',
   } as unknown as Runtime);
   const result = await pipeline.retryAsset(
     f.store.task(t.id),
     "hero",
     new AbortController().signal,
   );
-  expect(result.data.assets[0].imageId).not.toBe(first);
+  expect(result.data.assets[0].imageId).toBe(first);
+  expect(result.data.assets[0].candidates).toContain(first);
+  const drawn = result.data.assets[0].candidates!.find((id) => id !== first)!;
+  expect(drawn).toBeTruthy();
+  const selected = await pipeline.selectAsset(
+    f.store.task(t.id),
+    "hero",
+    drawn,
+  );
+  expect(selected.data.assets[0].imageId).toBe(drawn);
+  expect(selected.data.assets[0].selectedCandidateId).toBe(drawn);
   expect(result.data.assets[1].imageId).toBe(other);
   expect(
     f.store.one<Artifact>(
@@ -652,6 +664,47 @@ test("定妆方案解析后立刻写入预览检查点，不等待第一张图",
   expect(images).toBe(2);
 });
 
+test("定妆方案含本集雨夜则验收失败，不拿去生图", async () => {
+  const f = await fixture();
+  const { MediaPipeline } = await import("../apps/server/media-pipeline");
+  const task = f.store.tasks(f.project.id).find((t) => t.stage === 3)!;
+  const pipeline = new MediaPipeline({
+    store: f.store,
+    call: async () =>
+      JSON.stringify({
+        summary: "定妆",
+        assets: [
+          {
+            id: "hero",
+            name: "主角",
+            kind: "character",
+            prompt: "青年站在秋末夜雨中，衣袍淋湿",
+            identity: "青年",
+            state: "秋末雨中",
+          },
+        ],
+        voices: [],
+      }),
+    media: {
+      connection: () => f.c,
+      ensure: async () => {
+        throw new Error("should not generate");
+      },
+    },
+  } as unknown as Runtime);
+  await expect(
+    pipeline.produce(
+      task,
+      "test",
+      f.c,
+      [],
+      "",
+      null,
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow(/制作验收/);
+});
+
 test("语音连接缺失时先保存定妆图，补齐连接后复用图片继续试听", async () => {
   const f = await fixture();
   const { MediaPipeline } = await import("../apps/server/media-pipeline");
@@ -866,7 +919,7 @@ test("Qwen 定妆写声音卡并用长句试听，跨集复用，再听一条不
           kind: "character",
           prompt: "定妆",
           identity: "男性，青年剑修。",
-          state: "外袍被秋雨湿透",
+          state: "基础定妆。衣袍完好。",
         },
       ],
       voices: [],

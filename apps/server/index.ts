@@ -148,6 +148,11 @@ const server = Bun.serve<{
           201,
         );
       const project = path.match(/^\/api\/projects\/([^/]+)$/);
+      const visualReference = path.match(/^\/api\/projects\/([^/]+)\/visual-reference$/);
+      if (visualReference && req.method === "PUT") {
+        store.setVisualReference(visualReference[1], z.object({ referenceImageId: z.string() }).parse(await body(req)).referenceImageId);
+        return json({ ok: true });
+      }
       const production = path.match(/^\/api\/projects\/([^/]+)\/production$/);
       if (production && req.method === "PUT")
         return json(store.saveProductionRules(production[1], await body(req)));
@@ -241,6 +246,23 @@ const server = Bun.serve<{
             value.revision,
             value.character,
             value.rewritePortrait,
+          ),
+        );
+      }
+      const selectAsset = path.match(/^\/api\/tasks\/([^/]+)\/select-asset$/);
+      if (selectAsset && req.method === "POST") {
+        const value = revision
+          .extend({
+            assetId: z.string().min(1).max(120),
+            imageId: z.string().min(1).max(120),
+          })
+          .parse(await body(req));
+        return json(
+          await runtime.selectAsset(
+            selectAsset[1],
+            value.revision,
+            value.assetId,
+            value.imageId,
           ),
         );
       }

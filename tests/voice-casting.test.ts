@@ -108,6 +108,17 @@ test("文本模型返回的声音卡与设定打架或含画面词时拒绝", ()
   expect(done.instructions).toContain("青年男性");
   expect(done.instructions).not.toContain("还活着");
   expect(done.voicePortrait).toEqual(shen);
+  expect(() =>
+    completeVoiceSample(
+      draft,
+      {
+        voicePortrait: { ...shen, ageBand: "adult" },
+        sampleText: audition,
+      },
+      ["还活着。"],
+      "男性，青年剑修。",
+    ),
+  ).toThrow("不一致");
 });
 
 test("无台词幼女不配音；CustomVoice 幼童待选型；VoiceDesign 可写卡", () => {
@@ -288,4 +299,7 @@ test("未完成的声音卡向文本模型要结构化卡和试听稿，不合�
   expect(
     voiceCardPrompt("沈不言", "男性，青年剑修。", "摘录", ["还活着。"]),
   ).toContain("禁止照抄");
+  expect(
+    voiceCardPrompt("沈不言", "男性，青年剑修。", "摘录", ["还活着。"]),
+  ).toContain("SERIES VOICE DNA");
 });

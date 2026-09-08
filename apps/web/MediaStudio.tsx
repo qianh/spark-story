@@ -514,6 +514,7 @@ export function BundleView({
   files,
   onSave,
   onRetryAsset,
+  onSelectAsset,
   onRetryVoices,
   busy,
   production,
@@ -522,6 +523,7 @@ export function BundleView({
   files: MediaFile[];
   onSave: (content: string) => void;
   onRetryAsset?: (assetId: string) => void;
+  onSelectAsset?: (assetId: string, imageId: string) => void;
   onRetryVoices?: (character?: string, rewritePortrait?: boolean) => void;
   busy: boolean;
   production?: ProductionRules;
@@ -627,9 +629,29 @@ export function BundleView({
                     onClick={() => onRetryAsset(asset.id)}
                   >
                     <RefreshCw size={13} />
-                    {asset.imageId ? "重新生成" : "生成此图"}
+                    {asset.imageId ? "再抽一张" : "生成此图"}
                   </button>
                 )}
+                {onSelectAsset &&
+                  (asset.candidates || []).filter((id: string) => id !== asset.imageId).length >
+                    0 && (
+                    <div className="asset-candidates">
+                      <p className="muted">抽卡候选，选中后才替换正式定妆</p>
+                      {(asset.candidates as string[])
+                        .filter((id) => id !== asset.imageId)
+                        .map((id) => (
+                          <button
+                            key={id}
+                            className="button secondary compact"
+                            disabled={busy}
+                            onClick={() => onSelectAsset(asset.id, id)}
+                          >
+                            选为正式定妆
+                            <MediaPreview id={id} files={files} />
+                          </button>
+                        ))}
+                    </div>
+                  )}
               </section>
             ))}
           </div>

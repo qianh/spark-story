@@ -146,9 +146,11 @@ export class Runtime {
             attemptId,
             text,
             master,
-            upstream.filter(
-              (a) => !globalStages.includes(this.store.task(a.taskId).stage),
-            ),
+            upstream.filter((a) => {
+              const stage = this.store.task(a.taskId).stage;
+              if (task.stage === 3 && stage === 7) return true;
+              return !globalStages.includes(stage);
+            }),
             abort.signal,
           )
         : this.execute(task, attemptId, text, master, upstream, abort.signal)
@@ -178,6 +180,13 @@ export class Runtime {
     } finally {
       if (this.active.get(task.id) === abort) this.active.delete(task.id);
     }
+  }
+  async selectAsset(taskId: string, revision: number, assetId: string, imageId: string) {
+    const task = this.store.task(taskId);
+    if (task.revision !== revision) throw Error("任务版本已变化");
+    if (this.active.has(task.id))
+      throw Error("任务正在执行，请先中断再选择定妆");
+    return this.pipeline.selectAsset(task, assetId, imageId);
   }
   async retryAsset(taskId: string, revision: number, assetId: string) {
     const task = this.store.task(taskId);

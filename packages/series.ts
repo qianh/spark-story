@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { lookRegistrySchema } from "./look-registry";
 
 // Existing stage IDs are stable on disk; display/dependency order is explicit.
 export const stageOrder = [0, 7, 1, 2, 8, 3, 4, 5, 6];
@@ -37,6 +38,7 @@ export const storySchema = z.object({
   type: z.literal("story"),
   bible: nonempty,
   chapters: z.array(chapterSchema).min(1),
+  lookRegistry: lookRegistrySchema.optional(),
 });
 export const planEpisodeSchema = z.object({
   id: z.string().regex(/^EP\d{3,}$/),

@@ -220,7 +220,7 @@ export async function produceShotPlan(
           board = storyboardSchema.parse(
             (rawCandidate = await call(
               text,
-              `你是分镜 Agent。把本集完整拆成文字分镜，不生成媒体。返回 {"summary":"说明","shots":[{"id":"SH001","title":"标题","prompt":"摘要","beatId":"节拍ID","sceneId":"地点ID","duration":5,"assetIds":["稳定资产ID"],"imagePrompt":"静态画面","motionPrompt":"动作","soundPrompt":"同步环境与动作音效，安静场景填无","musicPrompt":"需要的背景器乐与情绪，不需要填无","camera":"景别机位","startState":"起始状态","endState":"结束状态","dialogue":"原文台词或空","speaker":"人物或空","route":"separate"}]}。镜头按节拍排列，时长与剧本一致，画面人物及持续怀抱/携带的角色道具必须列入 assetIds。\n检查反馈：${feedback}\n可复用资产：${JSON.stringify(store.assetLibrary(task.projectId).map((a) => ({ id: a.id, name: a.name, identity: a.identity, state: a.state })))}\n${context}`,
+              `你是分镜 Agent。把本集完整拆成文字分镜，不生成媒体。返回 {"summary":"说明","shots":[{"id":"SH001","title":"标题","prompt":"摘要","beatId":"节拍ID","sceneId":"地点ID","duration":5,"assetIds":["entityId:variantId"],"imagePrompt":"静态画面","motionPrompt":"动作","soundPrompt":"同步环境与动作音效，安静场景填无","musicPrompt":"需要的背景器乐与情绪，不需要填无","camera":"景别机位","startState":"起始状态","endState":"结束状态","dialogue":"原文台词或空","speaker":"人物或空","route":"separate"}]}。assetIds 只写外观登记中的实体+变体（成长阶段、换装、破败）。门外、末阶、近景写在 camera，不要单独建资产。夜雨、熄灯、高烧写在 startState/endState/imagePrompt，不要写成资产。只点本集镜头里实际出现的成长阶段。\n检查反馈：${feedback}\n外观登记：${JSON.stringify(store.lookRegistry(task.projectId) || { entities: [] })}\n可复用资产：${JSON.stringify(store.assetLibrary(task.projectId).map((a) => ({ id: a.id, name: a.name, identity: a.identity, state: a.state })))}\n${context}`,
               `生成 ${round + 1}/3`,
             )),
           );

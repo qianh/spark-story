@@ -79,6 +79,7 @@ export async function runGrokMedia(
       ),
     );
     const startedTools = new Set<string>();
+    let invalidImageRequest = false;
     await generate(c, executionPrompt, cwd, signal, event, [], () => {}, {
       tools,
       sessionId,
@@ -100,17 +101,21 @@ export async function runGrokMedia(
             writeFileSync(join(cwd, `tool-call-${startedTools.size}.json`), JSON.stringify({
               tool: block.name, input, expectedPrompt: job.prompt, promptMatches,
             }, null, 2));
-            if (job.kind === "image" && !promptMatches)
-              event("Grok 实际生图提示词与编译文本不同，请检查 tool-call 记录");
+            if (job.kind === "image" && (!promptMatches ||
+                (refs.length && JSON.stringify(input?.image) !== JSON.stringify(refs)))) {
+              invalidImageRequest = true;
+              event("实际生图提示词或参考图与编译请求不同，此次图片不会作为合格结果入库");
+            }
             event(`Grok ${block.name} 正在生成；等待供应商返回真实文件`);
           }
         for (const path of toolMediaPaths(message))
-          if (accepted(path) && !refs.includes(path)) {
+          if (accepted(path) && !refs.includes(path) && !invalidImageRequest) {
             writeFileSync(cache, JSON.stringify({ path, sessionId }));
             event("Grok 原生媒体工具已返回文件，正在校验并入库");
           }
       },
     });
+    if (invalidImageRequest) throw Error("Grok 改写了提示词或遗漏/重排参考图，拒绝接纳此次生成结果");
     if (!existsSync(cache))
       throw Error(
         "Grok CLI 未返回可验证的媒体工具文件；请检查账号媒体权限、工具是否可用及执行记录，不能把文字答复当成图片或视频",

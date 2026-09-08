@@ -10,13 +10,26 @@ export function StyleForm({
   onSubmit,
   catalog = defaultCatalog,
   applied,
+  images = [],
+  onReference,
 }: {
   current: string;
   focus?: string;
   busy: boolean;
   onSubmit: (id: string) => void;
   catalog?: StyleCard[];
-  applied?: { id: string; prompt: string; version?: string };
+  applied?: {
+    id: string;
+    prompt: string;
+    version?: string;
+    productionPrompt?: string;
+    referenceImageId?: string;
+    characterModule?: string;
+    propModule?: string;
+    sceneModule?: string;
+  };
+  images?: { id: string; name: string }[];
+  onReference?: (id: string) => void;
 }) {
   const initial =
     catalog.find((t) => t.id === (focus || current)) || catalog[0];
@@ -26,7 +39,8 @@ export function StyleForm({
   const inForce = applied?.id === shown.id;
   const stale =
     inForce && applied?.prompt && applied.prompt !== shown.prompt;
-  const promptText = inForce && applied?.prompt ? applied.prompt : shown.prompt;
+  const promptText =
+    inForce && applied?.prompt && !stale ? applied.prompt : shown.prompt;
   if (picking)
     return (
       <>
@@ -67,24 +81,54 @@ export function StyleForm({
       )}
       {stale && (
         <p className="muted">
-          下面是当前作品锁定的生成说明。模板文本已更新，重新应用后才会用于新的定妆。
+          模板说明已更新。新的定妆会按当前选中的这套画风生成，不必再选一次。
         </p>
       )}
       <h3 className="style-prompt-title">
         {inForce ? "当前作品正在用于生成的说明" : "生成时使用的画风说明"}
       </h3>
       <p className="muted">
-        定妆、关键帧和视频都只使用作品里锁定的这一份说明，不使用前端包里另一份副本。角色是谁、穿什么、本集什么状态，仍由资产设定决定。画风相同不代表角色外貌、年龄或服装相同。
+        公共画风 DNA 全系列不改。人物、道具、场景只换模块和内容。定妆、关键帧和视频都只使用作品里锁定的这一份说明。
       </p>
       <pre className="style-prompt">{promptText}</pre>
+      {inForce && applied?.characterModule && (
+        <>
+          <details>
+            <summary>人物模块</summary>
+            <pre className="style-prompt">{applied.characterModule}</pre>
+          </details>
+          <details>
+            <summary>道具模块</summary>
+            <pre className="style-prompt">{applied.propModule}</pre>
+          </details>
+          <details>
+            <summary>场景模块</summary>
+            <pre className="style-prompt">{applied.sceneModule}</pre>
+          </details>
+        </>
+      )}
+      {inForce && applied?.productionPrompt && applied.productionPrompt !== promptText && (
+        <details>
+          <summary>共用制作风格（场景、道具与剧情镜头）</summary>
+          <pre className="style-prompt">{applied.productionPrompt}</pre>
+        </details>
+      )}
+      {inForce && onReference && <label>作品美术参考
+        <select disabled={busy} value={applied?.referenceImageId || ""} onChange={e => onReference(e.target.value)}>
+          <option value="">尚未绑定参考图</option>
+          {images.map(file => <option key={file.id} value={file.id}>{file.name}</option>)}
+        </select>
+        {applied?.referenceImageId && <img alt="作品美术参考" src={`/api/media/files/${applied.referenceImageId}`} style={{maxWidth: "100%", maxHeight: 240, objectFit: "contain"}} />}
+      </label>}
+
       <div className="button-group">
-        {(shown.id !== current || stale) && (
+        {shown.id !== current && (
           <button
             className="button primary"
             disabled={busy}
             onClick={() => onSubmit(shown.id)}
           >
-            {stale ? "按当前模板重新应用" : "应用到当前作品"}
+            应用到当前作品
           </button>
         )}
         <button

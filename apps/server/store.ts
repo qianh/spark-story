@@ -131,10 +131,38 @@ export class Store {
     return row ? JSON.parse(row.data) : {};
   }
   visualStyle(projectId: string) {
+    const catalog = catalogVisualStyle(this.project(projectId).template);
     const saved = this.settings(projectId).visual;
+    if (saved?.id === catalog.id && saved.version !== catalog.version)
+      return { ...catalog, referenceImageId: saved.referenceImageId };
     if (saved?.id && typeof saved.prompt === "string" && saved.prompt)
       return saved;
-    return catalogVisualStyle(this.project(projectId).template);
+    return catalog;
+  }
+  lookRegistry(projectId: string) {
+    const saved = this.settings(projectId).lookRegistry;
+    if (saved) return saved;
+    const storyTask = this.one<Task>(
+      "SELECT * FROM tasks WHERE projectId=? AND stage=7",
+      projectId,
+    );
+    if (!storyTask) return undefined;
+    const art = this.one<Artifact>(
+      "SELECT * FROM artifacts WHERE taskId=? AND revision=? AND status='approved' ORDER BY createdAt DESC LIMIT 1",
+      storyTask.id,
+      storyTask.revision,
+    );
+    return art ? structured(art.content, storySchema)?.lookRegistry : undefined;
+  }
+  setVisualReference(projectId: string, referenceImageId: string) {
+    const style = this.visualStyle(projectId);
+    if (referenceImageId && !this.one("SELECT id FROM media_files WHERE id=? AND projectId=? AND kind='image'", referenceImageId, projectId))
+      throw Error("画风参考必须是当前作品的图片");
+    if (this.one("SELECT id FROM tasks WHERE projectId=? AND status IN ('running','reviewing','coordinating')", projectId) ||
+        this.one("SELECT id FROM media_jobs WHERE projectId=? AND status IN ('submitting','polling','downloading')", projectId))
+      throw Error("请等待当前生成结束后更换画风参考");
+    this.patchSettings(projectId, { visual: { ...style, referenceImageId: referenceImageId || undefined } });
+    this.event(projectId, "", "visual.reference", "作品美术参考已更新；后续生成使用此参考，已有图片需要重新验收。");
   }
   patchSettings(projectId: string, patch: Record<string, unknown>) {
     this.db.run(
@@ -207,11 +235,11 @@ export class Store {
     const style = catalogVisualStyle(templateId);
     this.project(projectId);
     return this.db.transaction(() => {
-      const prev = this.visualStyle(projectId);
+      const prev = this.settings(projectId).visual || {};
       const sameId = prev.id === style.id;
       const samePrompt = prev.prompt === style.prompt;
       if (sameId && samePrompt) {
-        this.patchSettings(projectId, { visual: style });
+        this.patchSettings(projectId, { visual: { ...style, referenceImageId: prev.referenceImageId } });
         return style;
       }
       if (
@@ -370,6 +398,11 @@ export class Store {
       ]);
       this.updateTask(taskId, revision, "approved");
       if (t.stage === 1) this.syncEpisodes(t, a.content);
+      if (t.stage === 7) {
+        const story = structured(a.content, storySchema);
+        if (story?.lookRegistry)
+          this.patchSettings(t.projectId, { lookRegistry: story.lookRegistry });
+      }
       if (t.stage === 3) this.registerAssets(t, a.content);
       for (const next of this.tasks(t.projectId))
         if (next.status === "blocked" && this.canRun(next))

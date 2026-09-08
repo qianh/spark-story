@@ -14,6 +14,10 @@ import {
   planIssues,
 } from "../../packages/series";
 import {
+  lookRegistrySchema,
+  lookRegistryAgentPrompt,
+} from "../../packages/look-registry";
+import {
   timingManifest,
   validateTextProduction,
 } from "../../packages/production";
@@ -175,10 +179,30 @@ export async function executeSeries(
       );
       chapters.push(chapter);
     }
+    const lookRegistry = await part(
+      "外观登记",
+      lookRegistrySchema,
+      lookRegistryAgentPrompt(
+        structure.bible,
+        JSON.stringify(
+          chapters.map((c) => ({
+            id: c.id,
+            title: c.title,
+            continuity: c.continuity,
+            beats: c.beats,
+          })),
+        ),
+      ),
+      (d) =>
+        d.entities.some((e) => new Set(e.variants.map((v) => v.id)).size !== e.variants.length)
+          ? ["变体 ID 重复"]
+          : [],
+    );
     const result = storySchema.parse({
       type: "story",
       bible: structure.bible,
       chapters,
+      lookRegistry,
     });
     const issues = storyIssues(result);
     if (issues.length) throw Error(`制作验收：${issues.join("；")}`);

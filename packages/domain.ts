@@ -1,4 +1,11 @@
-import { donghuaStylePrompt, donghuaStyleVersion } from "./visual-style";
+import {
+  characterSheetModule,
+  donghuaStylePrompt,
+  donghuaStyleVersion,
+  propSheetModule,
+  sceneSheetModule,
+  xianxiaProductionPrompt,
+} from "./visual-style";
 import { z } from "zod";
 import { productionRulesSchema } from "./production";
 export const stages = [
@@ -75,7 +82,7 @@ export const templates = [
     en: "XIANXIA DONGHUA",
     color: "#7b9aa8",
     description:
-      "《仙逆》式 3D CGI 国漫：精致立体造型、超写实皮肤、精细衣料与电影级光影",
+      "公共画风 DNA：仙侠 3D 材质与气质；人物、道具、场景各用自己的模块锁",
     prompt: donghuaStylePrompt,
   },
 ];
@@ -89,6 +96,14 @@ export function catalogVisualStyle(id: string) {
     description: t.description,
     prompt: t.prompt,
     version: t.id === "donghua3d" ? donghuaStyleVersion : t.id,
+    productionPrompt: t.id === "donghua3d" ? xianxiaProductionPrompt : t.prompt,
+    ...(t.id === "donghua3d"
+      ? {
+          characterModule: characterSheetModule,
+          propModule: propSheetModule,
+          sceneModule: sceneSheetModule,
+        }
+      : {}),
   };
 }
 export const projectInput = z.object({

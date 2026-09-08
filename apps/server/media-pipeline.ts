@@ -1,4 +1,15 @@
-import { assetVisualPrompt } from "../../packages/visual-style";
+import {
+  assetLookAgentPrompt,
+  assetVisualPrompt,
+  assertCanonicalLooks,
+  assertCharacterContent,
+  characterContentTemplate,
+  productionVisualPrompt,
+} from "../../packages/visual-style";
+import {
+  attachShotLookViews,
+  collapseLocationLooks,
+} from "../../packages/look-registry";
 import {
   castQwenVoices,
   fillMissingVoiceCards,
@@ -103,7 +114,7 @@ export class MediaPipeline {
                 task,
                 attemptId,
                 master,
-                `你是主控。审核附带的实际${file.kind === "video" ? "视频抽帧" : "图片"}。产物名称：${file.name}。检查构图、角色和画风一致性、主体错误、字幕可读性（若有）。抽帧只能证明这些时刻，不要声称已看过全视频。任务要求：${feedback}。产物上下文：${JSON.stringify(bundle.data)}。元数据：${file.metadata}。返回 JSON {"pass":boolean,"feedback":"具体问题与原因"}。`,
+                `你是主控。审核附带的实际${file.kind === "video" ? "视频抽帧" : "图片"}。产物名称：${file.name}。检查构图、角色和画风一致性、主体错误、字幕可读性（若有）。抽帧只能证明这些时刻，不要声称已看过全视频。选定制作画风：${productionVisualPrompt(store.visualStyle(task.projectId))}。必须区分仙侠三维制作质感与真人写真、实景旅游摄影；风格不符则不通过。任务要求：${feedback}。产物上下文：${JSON.stringify(bundle.data)}。元数据：${file.metadata}。返回 JSON {"pass":boolean,"feedback":"具体问题与原因"}。`,
                 signal,
                 paths,
               ),
@@ -184,6 +195,50 @@ export class MediaPipeline {
       ]);
     }
   }
+  async prepareCharacterContent(task: Task, asset: AssetPlan["assets"][number], assets: AssetPlan["assets"], stylePrompt: string, signal: AbortSignal) {
+    if (asset.kind !== "character" || !(stylePrompt.startsWith("STYLE LOCK —") || stylePrompt.startsWith("SHARED STYLE DNA"))) return;
+    if (asset.promptFormat === "character-content-v1") {
+      assertCharacterContent(asset.prompt);
+      return;
+    }
+    const result = parseResult(await this.runtime.call(
+      task, crypto.randomUUID(), this.runtime.store.binding("文本模型"),
+      `只将以下单个角色的已有设定转写为 CONTENT，不改变身份、外貌、服装、年龄，不使用其他角色的设定；未知信息不编造。删除旧描述中的构图背景和光影，内容不含 cinematic、史诗、仙气、电影感等风格词。填写全部字段，无则写 none。单独规划的武器在 Unique accessories 写 no weapon。仅返回 JSON {"prompt":"填好的 CONTENT 全文"}。模板：\n${characterContentTemplate}\n固定画风（不输出、不修改）：\n${stylePrompt}\n该角色设定：${JSON.stringify({ name: asset.name, prompt: asset.prompt, identity: asset.identity, state: asset.state })}\n独立道具名称：${JSON.stringify(assets.filter(a => a.kind === "prop").map(a => a.name))}`,
+      signal,
+    ));
+    if (!result || typeof result !== "object" || !("prompt" in result) || typeof result.prompt !== "string") throw Error("角色 CONTENT 转写未返回有效文本");
+    assertCharacterContent(result.prompt);
+    this.assertCurrent(task, signal);
+    asset.prompt = result.prompt;
+    asset.promptFormat = "character-content-v1";
+  }
+  assetReferences(task: Task, asset: AssetPlan["assets"][number], assets: AssetPlan["assets"], baseImageId?: string) {
+    const style = this.runtime.store.visualStyle(task.projectId);
+    const ids: string[] = [];
+    const notes: string[] = [];
+    const add = (id: string, role: string) => {
+      this.runtime.media.files.get(id, task.projectId);
+      let index = ids.indexOf(id);
+      if (index < 0) { ids.push(id); index = ids.length - 1; }
+      notes.push(`Reference ${index + 1}: ${role}`);
+    };
+    if (asset.sourceAssetId) {
+      const source = assets.find(a => a.id === asset.sourceAssetId);
+      if (!source?.imageId || source.id === asset.id) throw Error(`资产 ${asset.name} 的基础参考未完成或引用自身`);
+      add(source.imageId, `the source design for ${asset.sourceUsage || "view"}; preserve its geometry, identity and materials, show only the requested asset or view. Do not independently redesign it.`);
+    }
+    if (baseImageId) add(baseImageId, "the same asset identity in another state; retain its defining design.");
+    if (style.referenceImageId) add(style.referenceImageId, "production style only: match 3D sculpting and rendering finish; do not copy this subject, face, age, hair color, costume, pose or background into a different asset.");
+    return { ids, notes: notes.length ? `\n\nREFERENCE ROLES\n${notes.join("\n")}` : "" };
+  }
+
+  async reviewAssetImage(task: Task, asset: AssetPlan["assets"][number], imageId: string, referenceIds: string[], signal: AbortSignal) {
+    const { store, media } = this.runtime;
+    const paths = [media.files.get(imageId, task.projectId).path, ...referenceIds.map(id => media.files.get(id, task.projectId).path)];
+    return reviewSchema.parse(parseResult(await this.runtime.call(task, crypto.randomUUID(), store.binding("主模型"),
+      `审核实际图片，第一张为候选，后续为生成参考。选定作品画风：${productionVisualPrompt(store.visualStyle(task.projectId))}。资产：${JSON.stringify({name:asset.name,kind:asset.kind,prompt:asset.prompt,identity:asset.identity,state:asset.state,sourceAssetId:asset.sourceAssetId})}。检查主体类型正确、角色/服装或建筑形制符合设定、实际画面为同一仙侠3D制作质感而非真人写真或旅游摄影、参考角色的身份未串入其他资产、全貌可读。任何不符都判失败；不能因为提示词关键词齐全而通过。不确定明确写出。返回 JSON {"pass":boolean,"feedback":"具体画面证据和问题"}。`, signal, paths)));
+  }
+
   async retryAsset(task: Task, assetId: string, signal: AbortSignal) {
     if (task.stage !== 3) throw Error("仅定妆资产支持单张重新生成");
     if (["running", "reviewing", "coordinating"].includes(task.status))
@@ -199,6 +254,7 @@ export class MediaPipeline {
     const data = assetPlanSchema.parse(bundle?.data);
     const asset = data.assets.find((a) => a.id === assetId);
     if (!asset) throw Error("资产不存在");
+    assertCanonicalLooks([asset]);
     const p = store.project(task.projectId);
     const style = store.visualStyle(task.projectId);
     const library = store.assetLibrary(task.projectId);
@@ -206,28 +262,82 @@ export class MediaPipeline {
       ? library.find((a) => a.libraryId === asset.baseLibraryId)
       : undefined;
     this.assertCurrent(task, signal);
-    const generationPrompt = assetVisualPrompt(style, asset, data.assets);
-    asset.imageId = await media.ensure(
+    if (asset.promptFormat !== "character-content-v1" &&
+        asset.promptFormat !== "prop-content-v1" &&
+        asset.promptFormat !== "scene-content-v1")
+      await this.prepareCharacterContent(task, asset, data.assets, style.prompt, signal);
+    const refs = this.assetReferences(task, asset, data.assets, base?.imageId);
+    const generationPrompt =
+      asset.generationPrompt ||
+      assetVisualPrompt(style, asset, data.assets) + refs.notes;
+    const candidateId = await media.ensure(
       task.id,
       task.revision,
       "image",
       generationPrompt,
-      base?.imageId ? [base.imageId] : [],
+      asset.generationReferenceIds || refs.ids,
       { aspect: p.aspect },
       signal,
       undefined,
       true,
     );
-    asset.generationPrompt = generationPrompt;
-    asset.generationStyleVersion = style.version || style.id;
+    asset.candidates = [
+      ...new Set([
+        ...(asset.candidates || []),
+        ...(asset.imageId ? [asset.imageId] : []),
+        candidateId,
+      ]),
+    ];
+    const next = { type: "assets" as const, data };
+    store.publish(task.id, task.revision, JSON.stringify(next, null, 2));
+    const report = await this.reviewAssetImage(
+      task,
+      asset,
+      candidateId,
+      asset.generationReferenceIds || refs.ids,
+      signal,
+    );
+    store.event(task.projectId, task.id, report.pass ? "review.asset.passed" : "review.asset.failed", `${asset.name}：${report.feedback}`);
+    this.assertCurrent(task, signal);
+    if (!report.pass)
+      throw Error(`图片未通过验收，已追加候选，未替换正式定妆：${report.feedback}`);
+    store.event(
+      task.projectId,
+      task.id,
+      "media.retry",
+      `${asset.name} 已按锁定规格抽卡，正式定妆未自动覆盖。`,
+    );
+    return next;
+  }
+  async selectAsset(task: Task, assetId: string, imageId: string) {
+    if (task.stage !== 3) throw Error("仅定妆资产支持选择候选");
+    const { store } = this.runtime;
+    const artifact = store.one<Artifact>(
+      "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY createdAt DESC LIMIT 1",
+      task.id,
+      task.revision,
+    );
+    if (!artifact) throw Error("还没有可选择的定妆产物");
+    const bundle = mediaBundle(artifact.content);
+    const data = assetPlanSchema.parse(bundle?.data);
+    const asset = data.assets.find((a) => a.id === assetId);
+    if (!asset) throw Error("资产不存在");
+    const pool = [
+      ...(asset.candidates || []),
+      ...(asset.imageId ? [asset.imageId] : []),
+    ];
+    if (!pool.includes(imageId)) throw Error("只能选择本次抽卡产生的候选图");
+    this.runtime.media.files.get(imageId, task.projectId);
+    asset.imageId = imageId;
+    asset.selectedCandidateId = imageId;
     delete asset.libraryId;
     const next = { type: "assets" as const, data };
     store.publish(task.id, task.revision, JSON.stringify(next, null, 2));
     store.event(
       task.projectId,
       task.id,
-      "media.retry",
-      `${asset.name} 已按当前画风重新生成，旧图保留在素材库。`,
+      "media.select",
+      `${asset.name} 已选定正式定妆。`,
     );
     return next;
   }
@@ -480,7 +590,7 @@ export class MediaPipeline {
           : undefined,
       )
       .find(Boolean);
-    const context = `画幅 ${p.aspect}，风格 ${style.prompt}。每集最终时长 ${rules.minSeconds}～${rules.maxSeconds} 秒；具体镜头以本集已确认剧本和文字分镜为准，不强制场景数量、反应比例或叙事模板。\n资产必须分开记录 identity（不变外貌）与 state（服装、年龄、伤势、能力阶段）。分镜必须额外提供 beatId（剧本时间清单中的节拍 ID）、sceneId、imagePrompt（静态构图，不含连续动作）、motionPrompt（单一明确动作、运动方向与结果）、soundPrompt（环境和动作音效，明确时间点，无需则写无）、musicPrompt（是否需要配乐及其情绪、乐器与音量，无需则写无）、camera（景别、机位、轴线、视线）、startState、endState。prompt 保留镜头摘要。每镜头有叙事用途，所有镜头按节拍连续排列，同一节拍镜头时长之和严格等于节拍时长。动作需分清原因、执行和反应；保持跨镜头人物位置、视线、服饰伤势一致。strategy 仅支持 single（单段）或 tail-chain（超过供应商时限时以前段实际末帧接续），不要虚构其他供应商能力。用户要求：${feedback}。已确认上游：${JSON.stringify(upstream.map((a) => a.content))}`;
+    const context = `画幅 ${p.aspect}，风格 ${productionVisualPrompt(style)}。每集最终时长 ${rules.minSeconds}～${rules.maxSeconds} 秒；具体镜头以本集已确认剧本和文字分镜为准，不强制场景数量、反应比例或叙事模板。\n资产必须分开记录 identity（不变外貌）与 state（服装、年龄、伤势、能力阶段）。天气、昼夜、临时湿衣和剧情动作不属于 state，写入关键帧 imagePrompt。分镜必须额外提供 beatId（剧本时间清单中的节拍 ID）、sceneId、imagePrompt（静态构图，不含连续动作）、motionPrompt（单一明确动作、运动方向与结果）、soundPrompt（环境和动作音效，明确时间点，无需则写无）、musicPrompt（是否需要配乐及其情绪、乐器与音量，无需则写无）、camera（景别、机位、轴线、视线）、startState、endState。prompt 保留镜头摘要。每镜头有叙事用途，所有镜头按节拍连续排列，同一节拍镜头时长之和严格等于节拍时长。动作需分清原因、执行和反应；保持跨镜头人物位置、视线、服饰伤势一致。strategy 仅支持 single（单段）或 tail-chain（超过供应商时限时以前段实际末帧接续），不要虚构其他供应商能力。用户要求：${feedback}。已确认上游：${JSON.stringify(upstream.map((a) => a.content))}`;
     const checkShots = (shots: Storyboard["shots"]) => {
       const issues = validateShotTiming(shots, rules, episode);
       if (issues.length) throw Error(`制作验收不通过：${issues.join("；")}`);
@@ -520,19 +630,48 @@ export class MediaPipeline {
     if (task.stage === 3) {
       media.connection("image");
       const library = store.assetLibrary(task.projectId);
+      const registry = store.lookRegistry(task.projectId);
+      const lookAsk = async (prompt: string) =>
+        parseResult(
+          await this.runtime.call(task, attemptId, text, prompt, signal),
+        );
       const data: AssetPlan = assetPlanSchema.parse(
         edited?.type === "assets"
           ? edited.data
-          : await ask(
-              `你是角色与资产 Agent。提取本集实际需要的角色、场景、道具，生成定妆提示词；角色图是单角色，不把多人拼在同一图。画风必须遵守：${style.prompt}。每项填写 promptFormat="visual-description-v1"。prompt 是一段可直接用于生图的完整中文画面描述，合并该资产全部可见身份、服饰、状态、姿态和场景信息，各写一次，约150～300字；identity 与 state 用于资产库记录，不会再次拼入生图输入，所以其中影响外观的信息必须完整体现在 prompt。用正向描述表达表情和气质，不堆叠同义禁令。不要写通用画风词、渲染词或中英双语翻译，程序会原样添加作品画风。美术表现严格使用当前画风，不重复加入真人写真或过时的写实渲染要求，不要改写成二维插画、水墨、赛璐璐或Q版，也不要写成任何现有动画角色的翻版。角色定妆只画身体、脸、头发和身上的衣服。已经单独列为 prop 的物件不要画进角色图：有佩剑资产则角色定妆无剑、不握剑、腰侧不挂剑。道具图是该物件的唯一外观来源，不要为了好看把道具画进角色定妆。本次只规划图像资产，voices 返回空数组；声音试听会在图像完成后独立规划。返回 JSON：{"summary":"说明","assets":[{"id":"稳定ID","name":"名字","kind":"character或scene或prop","promptFormat":"visual-description-v1","prompt":"完整中文画面描述","identity":"不变外貌","state":"当前外观状态"}],"voices":[{"character":"角色名字","voice":"可用ID","sampleText":"该角色一句适合试听的台词"}]}。从文字分镜 assetIds 提取全部需求并保持 ID 一致。已有资产可通过 libraryId 引用，必须选择外观与状态都匹配的版本；新增状态创建独立资产，并用 baseLibraryId 指定基础参考版本，不覆盖旧版。每项填写 identity 与 state。不要虚构 imageId、audioId。可复用库：${JSON.stringify(library)}。`,
+          : await lookAsk(
+              assetLookAgentPrompt(
+                style.prompt,
+                JSON.stringify(library),
+                JSON.stringify(registry || { entities: [] }),
+              ) +
+                "同一场景的局部和另一视角不要单独建资产，写在分镜 camera。换装用 variantKind=costume，破败用 form，成长阶段用 growth。禁止把同一地点多个镜头独立设计成不同地点。本集分镜点到的实体变体必须提供。",
             ),
       );
       const shotPlan = bundleAt("shot-plan");
-      for (const id of shotPlan?.shots.flatMap((s: any) => s.assetIds) || [])
+      const shotIds = shotPlan?.shots.flatMap((s: any) => s.assetIds as string[]) || [];
+      data.assets = collapseLocationLooks(data.assets);
+      data.assets = attachShotLookViews(data.assets, shotIds);
+      assertCanonicalLooks(data.assets);
+      for (const id of shotIds)
         if (!data.assets.some((a) => a.id === id))
           throw Error(`制作验收：文字分镜需要的资产 ${id} 未提供`);
       saveProgress("assets", data);
-      for (const asset of data.assets) {
+      const ordered: typeof data.assets = [];
+      const pending = new Set<string>();
+      const visited = new Set<string>();
+      const visit = (asset: typeof data.assets[number]) => {
+        if (visited.has(asset.id)) return;
+        if (pending.has(asset.id)) throw Error("资产基础参考存在循环");
+        pending.add(asset.id);
+        if (asset.sourceAssetId) {
+          const source = data.assets.find(a => a.id === asset.sourceAssetId);
+          if (!source) throw Error(`资产基础参考不存在：${asset.sourceAssetId}`);
+          visit(source);
+        }
+        pending.delete(asset.id); visited.add(asset.id); ordered.push(asset);
+      };
+      data.assets.forEach(visit);
+      for (const asset of ordered) {
         const base = asset.baseLibraryId
           ? library.find((a) => a.libraryId === asset.baseLibraryId)
           : undefined;
@@ -550,19 +689,42 @@ export class MediaPipeline {
           asset.imageId = saved.imageId;
         }
         this.assertCurrent(task, signal);
+        if (asset.sourceUsage === "view") {
+          const source = data.assets.find((a) => a.id === asset.sourceAssetId);
+          if (!source?.imageId)
+            throw Error(`资产 ${asset.name} 的基础参考未完成或引用自身`);
+          asset.imageId = source.imageId;
+          asset.generationPrompt = source.generationPrompt;
+          asset.generationStyleVersion = source.generationStyleVersion;
+          asset.generationReferenceIds = source.generationReferenceIds;
+          asset.candidates = source.candidates;
+          asset.selectedCandidateId = source.selectedCandidateId;
+          saveProgress("assets", data);
+          continue;
+        }
+        await this.prepareCharacterContent(task, asset, data.assets, style.prompt, signal);
+        const refs = this.assetReferences(task, asset, data.assets, base?.imageId);
+        const generationPrompt = assetVisualPrompt(style, asset, data.assets) + refs.notes;
+        if ((style.prompt.startsWith("STYLE LOCK —") || style.prompt.startsWith("SHARED STYLE DNA")) &&
+            (asset.generationPrompt !== generationPrompt || JSON.stringify(asset.generationReferenceIds || []) !== JSON.stringify(refs.ids))) {
+          delete asset.imageId;
+          delete asset.libraryId;
+        }
         if (!asset.imageId) {
-          const generationPrompt = assetVisualPrompt(style, asset, data.assets);
           asset.imageId = await media.ensure(
             task.id,
             task.revision,
             "image",
             generationPrompt,
-            base?.imageId ? [base.imageId] : [],
+            refs.ids,
             { aspect: p.aspect },
             signal,
           );
+          asset.generationReferenceIds = refs.ids;
           asset.generationPrompt = generationPrompt;
           asset.generationStyleVersion = style.version || style.id;
+          asset.candidates = [asset.imageId];
+          asset.selectedCandidateId = asset.imageId;
         }
         saveProgress("assets", data);
       }
@@ -720,7 +882,7 @@ export class MediaPipeline {
             task.id,
             task.revision,
             "image",
-            `${style.prompt}。严格依据参考资产保持人物外观。${shot.imagePrompt || shot.prompt}。${shot.camera}。起始状态：${shot.startState}`,
+            `${productionVisualPrompt(style)}。严格依据参考资产保持人物外观。${shot.imagePrompt || shot.prompt}。${shot.camera}。起始状态：${shot.startState}`,
             refs,
             { aspect: p.aspect },
             signal,
@@ -785,7 +947,7 @@ export class MediaPipeline {
               task.id,
               task.revision,
               "image",
-              `${style.prompt}。${shot.imagePrompt || shot.prompt}。${shot.camera}。${shot.startState}。局部修订：${imageFeedback}`,
+              `${productionVisualPrompt(style)}。${shot.imagePrompt || shot.prompt}。${shot.camera}。${shot.startState}。局部修订：${imageFeedback}`,
               refs,
               { aspect: p.aspect },
               signal,
@@ -873,7 +1035,7 @@ export class MediaPipeline {
             "media.audio",
             "当前视频连接未声明同步音频能力，本段仍需后期补音效与音乐",
           );
-        const prompt = `${style.prompt}。${shot.motionPrompt || shot.prompt}。${shot.camera}。起始状态：${shot.startState}；结束状态：${shot.endState}。${shot.route === "native" ? `角色 ${shot.speaker} 用 ${shot.voice} 声音准确说出：${shot.dialogue}` : "保持画面连续，禁止字幕和无关文字。"} ${withAudio ? videoAudioPrompt(shot) : ""} ${feedback}`;
+        const prompt = `${productionVisualPrompt(style)}。${shot.motionPrompt || shot.prompt}。${shot.camera}。起始状态：${shot.startState}；结束状态：${shot.endState}。${shot.route === "native" ? `角色 ${shot.speaker} 用 ${shot.voice} 声音准确说出：${shot.dialogue}` : "保持画面连续，禁止字幕和无关文字。"} ${withAudio ? videoAudioPrompt(shot) : ""} ${feedback}`;
         if (shot.duration > max && shot.route !== "native") {
           if (shot.strategy === "single")
             throw Error(

@@ -815,6 +815,15 @@ function App() {
                               }),
                             )
                           }
+                          onSelectAsset={(assetId, imageId) =>
+                            act(() =>
+                              api(`/tasks/${task.id}/select-asset`, {
+                                revision: task.revision,
+                                assetId,
+                                imageId,
+                              }),
+                            )
+                          }
                         />
                       ) : board.progress?.find((p) => p.taskId === task.id)
                           ?.content ? (
@@ -1879,6 +1888,8 @@ function App() {
                 focus={modal.split(":")[1] || board.project.template}
                 catalog={catalog}
                 applied={(board.project as any).visualStyle}
+                images={board.mediaFiles.filter((f: any) => f.kind === "image")}
+                onReference={(referenceImageId) => act(async () => { await api(`/projects/${projectId}/visual-reference`, { referenceImageId }, "PUT"); })}
                 busy={busy}
                 onSubmit={(template) =>
                   act(async () => {

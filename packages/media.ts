@@ -61,6 +61,7 @@ export const voiceSampleSchema = z.object({
   audioId: ref.optional(),
   voicePortrait: voicePortraitSchema.optional(),
   voiceIdentityKey: z.string().default(""),
+  growthStage: z.string().optional(),
 });
 export const assetPlanSchema = z.object({
   summary: z.string(),
@@ -71,14 +72,30 @@ export const assetPlanSchema = z.object({
         name: z.string(),
         kind: z.enum(["character", "scene", "prop"]),
         prompt: z.string().min(1),
-        promptFormat: z.literal("visual-description-v1").optional(),
+        promptFormat: z
+          .enum([
+            "visual-description-v1",
+            "character-content-v1",
+            "prop-content-v1",
+            "scene-content-v1",
+          ])
+          .optional(),
         identity: z.string().default(""),
         state: z.string().default(""),
         imageId: ref.optional(),
         generationPrompt: z.string().optional(),
         generationStyleVersion: z.string().optional(),
+        generationReferenceIds: z.array(z.string()).optional(),
+        sourceAssetId: z.string().optional(),
+        sourceUsage: z.enum(["view", "extract", "variant"]).optional(),
         libraryId: ref.optional(),
         baseLibraryId: ref.optional(),
+        entityId: z.string().optional(),
+        variantId: z.string().optional(),
+        variantKind: z.enum(["growth", "costume", "form"]).optional(),
+        growthStage: z.string().optional(),
+        candidates: z.array(z.string()).optional(),
+        selectedCandidateId: ref.optional(),
       }),
     )
     .min(1),

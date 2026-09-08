@@ -167,11 +167,10 @@ test("故事章二断线，重启续写保留已通过章一；实时正文可�
       ),
     ).toHaveLength(1);
     expect(
-      s.one<{ content: string }>(
-        "SELECT content FROM task_progress WHERE taskId=?",
-        t.id,
-      )?.content,
-    ).toContain("CH002");
+      s.list(
+        "SELECT * FROM planning_checkpoints WHERE kind='章节 CH002' AND status='reviewed'",
+      ),
+    ).toHaveLength(1);
   } finally {
     r.shutdown();
     await done(r);

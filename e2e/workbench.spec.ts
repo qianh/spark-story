@@ -54,7 +54,7 @@ test("制作规则可编辑、非法区间被拒绝、保存后重置规划但�
   await expect(
     page.getByRole("heading", { name: "三维仙侠国漫" }),
   ).toBeVisible();
-  await expect(page.getByText("高细节3D CGI仙侠")).toBeVisible();
+  await expect(page.getByText("SHARED STYLE DNA")).toBeVisible();
   await page.getByRole("button", { name: "应用到当前作品" }).click();
   await expect(
     page.getByRole("button", { name: /画风 · 三维仙侠国漫/ }),

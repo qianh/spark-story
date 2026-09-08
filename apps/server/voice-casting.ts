@@ -119,6 +119,16 @@ export function completeVoiceSample(
     parsed.voicePortrait.ageBand !== key.ageBand
   )
     throw Error("声音卡性别或年龄段与角色设定不一致");
+  const elder =
+    key.ageBand === "adult" ||
+    key.ageBand === "elder" ||
+    /老者|长辈|老年|年迈|老妇/.test(identity);
+  if (
+    (parsed.voicePortrait.ageBand === "adult" ||
+      parsed.voicePortrait.ageBand === "elder") &&
+    !elder
+  )
+    throw Error("非年长角色不能填中年或老年声线");
   const sampleText = validateSampleText(parsed.sampleText, lines);
   const instructions = compileVoiceInstruct(parsed.voicePortrait);
   return {
@@ -148,13 +158,27 @@ export function characterLore(
   return source.slice(0, max);
 }
 
+export const seriesVoiceDna = `SERIES VOICE DNA — 主流国漫配音，全剧默认遵守：
+
+听感参考国产仙侠/奇幻国漫配音：口齿清楚，有角色口吻，略带表演弹性，说话有来势。
+默认年轻。非年长角色年龄段只许幼童、少年、青年，禁止中年、老年。
+年轻角色用清亮、有青春感的声线，不要苍劲、沙哑沧桑、中年沉稳、过慢念稿、广播腔、纪录片旁白、欧美低沉暗黑。
+不要死板平铺。活泼是「有口气、有配音感」，不是每个角色都卖萌或元气偶像。
+剧情明确年长的角色才用中年/老年，仍保持国漫配音的清晰口吻，不要话剧老生。
+声音卡只写听得见的声线，不写外貌、服饰、场景、本集天气。`;
+
 export function voiceCardPrompt(
   name: string,
   identity: string,
   lore: string,
   lines: string[],
 ) {
-  return `你是配音声音设计。只根据角色稳定身份和故事设定，填写结构化声音卡和试听稿。不要写外貌、服饰、天气、场景。试听稿 2～4 句、80～200 字，口吻像该角色但不是分镜台词，禁止自我介绍和剧透。只返回 JSON {"voicePortrait":{"gender":"male或female","ageBand":"child|teen|youth|adult|elder","pitch":"low|mid-low|mid|mid-high|high","timbre":"听感短词","pace":"slow|slightly-slow|medium|slightly-fast","accent":"口音","baselineEmotion":"一贯气质","avoid":["禁忌"]},"sampleText":"试听稿"}。\n角色：${name}\n身份：${identity}\n设定摘录：${lore}\n本集已确认台词（仅作说话习惯参考，禁止照抄）：${JSON.stringify(lines)}`;
+  return `你是配音声音设计。只根据角色稳定身份和故事设定，填写结构化声音卡和试听稿。必须遵守作品声音气质。不要写外貌、服饰、天气、场景。试听稿 2～4 句、80～200 字，口吻像该角色但不是分镜台词，禁止自我介绍和剧透。只返回 JSON {"voicePortrait":{"gender":"male或female","ageBand":"child|teen|youth|adult|elder","pitch":"low|mid-low|mid|mid-high|high","timbre":"听感短词","pace":"slow|slightly-slow|medium|slightly-fast","accent":"口音","baselineEmotion":"一贯气质","avoid":["禁忌"]},"sampleText":"试听稿"}。
+${seriesVoiceDna}
+角色：${name}
+身份：${identity}
+设定摘录：${lore}
+本集已确认台词（仅作说话习惯参考，禁止照抄）：${JSON.stringify(lines)}`;
 }
 
 export async function fillMissingVoiceCards(
@@ -240,6 +264,7 @@ export function castQwenVoices(
         castingNote: "",
         status: "ready",
         voiceIdentityKey: "",
+        growthStage: asset.growthStage || "",
       };
       if (!lines.length)
         return {
@@ -266,10 +291,12 @@ export function castQwenVoices(
             "该角色需要儿童声线，当前 Qwen CustomVoice 预设没有明确的儿童音色，需提供合适声音模型或参考声音；不能用成人声替代。",
         };
       const voice = qwenVoiceForPortrait(parsed.gender, parsed.ageBand, design);
+      const stage = asset.growthStage || "";
       const bound = [...data.voices, ...library].find(
         (v) =>
           v.character === asset.name &&
           v.voiceIdentityKey === key &&
+          (v.growthStage || "") === stage &&
           completeCard(v),
       );
       const borrowed = borrow.find(
