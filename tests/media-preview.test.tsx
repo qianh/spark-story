@@ -9,6 +9,7 @@ import {
 import {
   BundleView,
   MediaGenerationProgress,
+  MediaLibrary,
   MediaPreview,
 } from "../apps/web/MediaStudio";
 
@@ -175,6 +176,46 @@ test("部分定妆图已完成时预览直接显示图片，未完成项保留�
   expect(html).toContain("等待实际产物");
 });
 
+test("媒体库提供勾选和批量删除", () => {
+  const html = renderToStaticMarkup(
+    <MediaLibrary
+      files={[
+        {
+          id: "img-1",
+          projectId: "p",
+          taskId: "t",
+          revision: 46,
+          kind: "image",
+          name: "山门.png",
+          path: "img-1.png",
+          mime: "image/png",
+          metadata: "{}",
+          createdAt: "",
+        },
+      ]}
+      task={{
+        id: "t",
+        projectId: "p",
+        stage: 3,
+        title: "定妆与资产",
+        role: "角色与资产 Agent",
+        status: "paused",
+        revision: 47,
+        round: 0,
+        instruction: "",
+        error: "",
+        updatedAt: "",
+      }}
+      act={() => {}}
+      onUpdated={() => {}}
+    />,
+  );
+  expect(html).toContain("批量删除");
+  expect(html).toContain("全选");
+  expect(html).toContain('type="checkbox"');
+  expect(html).toContain("选择 山门.png");
+});
+
 test("定妆卡片提供单张重新生成，不进入整体编辑", () => {
   const html = renderToStaticMarkup(
     <BundleView
@@ -215,6 +256,46 @@ test("定妆卡片提供单张重新生成，不进入整体编辑", () => {
   );
   expect(html).toContain("再抽一张");
   expect(html).toContain("沈不言");
+});
+
+test("定妆网格不展示同一地点的视图卡片", () => {
+  const html = renderToStaticMarkup(
+    <BundleView
+      content={JSON.stringify({
+        type: "assets",
+        data: {
+          summary: "定妆",
+          assets: [
+            {
+              id: "LOC-QINGWU-SHANMEN-STAIRS",
+              name: "青梧宗山门",
+              kind: "scene",
+              prompt: "主定妆",
+            },
+            {
+              id: "LOC-QINGWU-SHANMEN-LASTSTEP",
+              name: "青梧宗山门",
+              kind: "scene",
+              prompt: "末阶",
+              sourceUsage: "view",
+            },
+            {
+              id: "LOC-QINGWU-SHANMEN-OUTER",
+              name: "青梧宗山门",
+              kind: "scene",
+              prompt: "门外",
+              sourceUsage: "view",
+            },
+          ],
+          voices: [],
+        },
+      })}
+      files={[]}
+      busy={false}
+      onSave={() => {}}
+    />,
+  );
+  expect(html.split("青梧宗山门").length - 1).toBe(1);
 });
 
 test("定妆提示词默认收起，需点开查看", () => {
@@ -270,7 +351,7 @@ test("声音试听展示声音卡、试听稿、文件时长和再听一条", ()
               sampleText:
                 "我只问她还活着没有。先把人带离石阶，再谈其余。剑还在腰侧，这一夜不许任何人靠近。青梧的规矩不是拿来吓孩子的，是拿来护人的。山门空着，谁来都要先过我这一关，没有例外。",
               instructions:
-                "青年男性，中低音，音色清冷、偏薄、不浑厚。语速偏慢，吐字清楚。标准普通话，无方言。情绪底色克制、冷、不煽情。不要广告腔、卖萌、朗诵、读画面。",
+                "青年男性，中音，音色清冷、偏薄、不浑厚。偏年轻、有青春感。语速中，吐字清楚。标准普通话，无方言。情绪底色克制、冷、不煽情。不要广告腔、卖萌、朗诵、读画面。",
               castingNote:
                 "沿用已确认声线。再生成是同一方向的抽样，不能当声音克隆。",
               status: "ready",
@@ -278,9 +359,9 @@ test("声音试听展示声音卡、试听稿、文件时长和再听一条", ()
               voicePortrait: {
                 gender: "male",
                 ageBand: "youth",
-                pitch: "mid-low",
+                pitch: "mid",
                 timbre: "清冷、偏薄、不浑厚",
-                pace: "slightly-slow",
+                pace: "medium",
                 accent: "标准普通话，无方言",
                 baselineEmotion: "克制、冷、不煽情",
                 avoid: ["广告腔", "卖萌", "朗诵", "读画面"],
@@ -308,7 +389,7 @@ test("声音试听展示声音卡、试听稿、文件时长和再听一条", ()
       onRetryVoices={() => {}}
     />,
   );
-  expect(html).toContain("青年男性，中低音");
+  expect(html).toContain("青年男性，中音");
   expect(html).toContain("山门空着");
   expect(html).toContain("沿用已确认声线");
   expect(html).toContain("8.2 秒");

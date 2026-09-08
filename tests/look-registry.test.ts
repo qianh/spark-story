@@ -5,6 +5,7 @@ import {
   lookAssetId,
   lookRegistryAgentPrompt,
   lookRegistrySchema,
+  lookSheetAssets,
   parseLookAssetId,
 } from "../packages/look-registry";
 
@@ -55,6 +56,10 @@ test("同一地点多个分镜 ID 合成一张主定妆，其余当视图", () =
   expect(
     withOuter.find((a) => a.id === "LOC-QINGWU-SHANMEN-OUTER")?.sourceUsage,
   ).toBe("view");
+  const sheet = lookSheetAssets(withOuter);
+  expect(sheet.filter((a) => a.kind === "scene")).toHaveLength(1);
+  expect(sheet.some((a) => a.id === "LOC-QINGWU-SHANMEN-STAIRS")).toBe(true);
+  expect(sheet.some((a) => a.id === "LOC-QINGWU-SHANMEN-LASTSTEP")).toBe(false);
 });
 
 test("外观登记只抽实体和变体，不把视图当资产", () => {

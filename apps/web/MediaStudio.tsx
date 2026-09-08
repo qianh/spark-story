@@ -15,8 +15,10 @@ import {
   RefreshCw,
   Upload,
   Check,
+  Trash2,
   X,
 } from "lucide-react";
+import { lookSheetAssets } from "../../packages/look-registry";
 import {
   mediaBundle,
   mediaKinds,
@@ -232,6 +234,12 @@ export function MediaLibrary({
   onUpdated: () => void;
 }) {
   const [filter, setFilter] = useState("all");
+  const [selected, setSelected] = useState<string[]>([]);
+  const visible = files.filter((f) => filter === "all" || f.kind === filter);
+  const toggle = (id: string) =>
+    setSelected((cur) =>
+      cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id],
+    );
   const upload = async (file: File) => {
     const f = new FormData();
     f.set("taskId", task.id);
@@ -243,24 +251,65 @@ export function MediaLibrary({
     if (!r.ok) throw Error((await r.json()).error);
     onUpdated();
   };
+  const removeSelected = async () => {
+    if (!selected.length) return;
+    if (
+      !confirm(
+        `删除选中的 ${selected.length} 个素材？若当前定妆只引用这些文件，本版候选会一并清掉，以便重新执行。`,
+      )
+    )
+      return;
+    const r = await fetch(`/api/projects/${task.projectId}/media`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: selected }),
+    });
+    if (!r.ok) throw Error((await r.json()).error);
+    setSelected([]);
+    onUpdated();
+  };
   return (
     <section className="media-library">
       <div className="section-heading">
         <h2>
           媒体素材 <span>{files.length}</span>
         </h2>
-        <label className="button secondary upload-button">
-          <Upload size={14} /> 导入本地素材
-          <input
-            type="file"
-            accept="image/png,image/jpeg,image/webp,audio/*,video/*"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) act(() => upload(f));
-              e.target.value = "";
-            }}
-          />
-        </label>
+        <div className="media-library-actions">
+          {visible.length > 0 && (
+            <button
+              className="text-button"
+              onClick={() =>
+                setSelected(
+                  selected.length === visible.length
+                    ? []
+                    : visible.map((f) => f.id),
+                )
+              }
+            >
+              {selected.length === visible.length ? "取消全选" : "全选"}
+            </button>
+          )}
+          <button
+            className="button secondary"
+            disabled={!selected.length}
+            onClick={() => act(() => removeSelected())}
+          >
+            <Trash2 size={14} />
+            批量删除{selected.length ? ` ${selected.length}` : ""}
+          </button>
+          <label className="button secondary upload-button">
+            <Upload size={14} /> 导入本地素材
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp,audio/*,video/*"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) act(() => upload(f));
+                e.target.value = "";
+              }}
+            />
+          </label>
+        </div>
       </div>
       <div className="media-filters">
         {[
@@ -280,17 +329,29 @@ export function MediaLibrary({
         ))}
       </div>
       <div className="media-library-grid">
-        {files
-          .filter((f) => filter === "all" || f.kind === filter)
-          .map((f) => (
-            <div className="panel media-file-card" key={f.id}>
+        {visible.map((f) => (
+            <div
+              className={
+                "panel media-file-card" +
+                (selected.includes(f.id) ? " selected" : "")
+              }
+              key={f.id}
+            >
               <MediaPreview id={f.id} files={files} />
-              <div>
-                <strong>{f.name}</strong>
-                <small>
-                  修订 {f.revision} · {f.kind}
-                </small>
-              </div>
+              <label className="media-file-meta">
+                <input
+                  type="checkbox"
+                  checked={selected.includes(f.id)}
+                  onChange={() => toggle(f.id)}
+                  aria-label={"选择 " + f.name}
+                />
+                <span>
+                  <strong>{f.name}</strong>
+                  <small>
+                    修订 {f.revision} · {f.kind}
+                  </small>
+                </span>
+              </label>
             </div>
           ))}
       </div>
@@ -578,7 +639,9 @@ export function BundleView({
       {bundle.type === "assets" ? (
         <>
           <div className="bundle-asset-grid">
-            {data.assets.map((asset: any, i: number) => (
+            {lookSheetAssets(data.assets).map((asset: any) => {
+              const i = data.assets.findIndex((row: any) => row.id === asset.id);
+              return (
               <section key={asset.id} className="bundle-card">
                 <MediaPreview id={asset.imageId} files={files} />
                 <h3>
@@ -653,7 +716,8 @@ export function BundleView({
                     </div>
                   )}
               </section>
-            ))}
+            );
+            })}
           </div>
           <h3 className="section-heading">角色声音试听</h3>
           {onRetryVoices && (

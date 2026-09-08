@@ -414,6 +414,12 @@ const server = Bun.serve<{
         );
         return json({ ...saved, path: undefined });
       }
+      const removeMedia = path.match(/^\/api\/projects\/([^/]+)\/media$/);
+      if (removeMedia && req.method === "DELETE") {
+        const input = z.object({ ids: z.array(z.string()).min(1) }).parse(await body(req));
+        await runtime.media.files.removeMany(removeMedia[1], input.ids);
+        return json({ ok: true, deleted: input.ids.length });
+      }
       if (path === "/api/media/jobs" && req.method === "POST") {
         const input = z
           .object({

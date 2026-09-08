@@ -65,13 +65,30 @@ function assertAudible(text: string, label: string) {
   if (visual.test(text)) throw Error(`${label}含画面词，不能用于声音描述`);
 }
 
+function isYoungBand(ageBand: VoicePortrait["ageBand"]) {
+  return ageBand === "child" || ageBand === "teen" || ageBand === "youth";
+}
+
+export function assertYoungVoice(portrait: VoicePortrait) {
+  if (!isYoungBand(portrait.ageBand)) return;
+  if (portrait.pitch === "low" || portrait.pitch === "mid-low")
+    throw Error("年轻角色不能用低音或中低音，听感会偏中年");
+  if (portrait.pace === "slow" || portrait.pace === "slightly-slow")
+    throw Error("年轻角色不能用慢语速，听感会偏老成");
+}
+
 export function compileVoiceInstruct(portrait: VoicePortrait) {
   voicePortraitSchema.parse(portrait);
+  assertYoungVoice(portrait);
   assertAudible(
     `${portrait.timbre}${portrait.accent}${portrait.baselineEmotion}${portrait.avoid.join("")}`,
     "声音卡",
   );
-  const text = `${ageLabel[portrait.ageBand]}${portrait.gender === "male" ? "男性" : "女性"}，${pitchLabel[portrait.pitch]}音，音色${portrait.timbre}。语速${paceLabel[portrait.pace]}，吐字清楚。${portrait.accent}。情绪底色${portrait.baselineEmotion}。不要${portrait.avoid.join("、")}。`;
+  const young = isYoungBand(portrait.ageBand);
+  const avoid = young
+    ? [...portrait.avoid, "低沉浑厚", "中年沉稳"]
+    : portrait.avoid;
+  const text = `${ageLabel[portrait.ageBand]}${portrait.gender === "male" ? "男性" : "女性"}，${pitchLabel[portrait.pitch]}音，音色${portrait.timbre}。${young ? "偏年轻、有青春感。" : ""}语速${paceLabel[portrait.pace]}，吐字清楚。${portrait.accent}。情绪底色${portrait.baselineEmotion}。不要${[...new Set(avoid)].join("、")}。`;
   const n = textLen(text);
   if (n < 30 || n > 120) throw Error("编译后的声音描述长度须为 30～120 字");
   assertAudible(text, "声音描述");
@@ -129,6 +146,7 @@ export function completeVoiceSample(
     !elder
   )
     throw Error("非年长角色不能填中年或老年声线");
+  assertYoungVoice(parsed.voicePortrait);
   const sampleText = validateSampleText(parsed.sampleText, lines);
   const instructions = compileVoiceInstruct(parsed.voicePortrait);
   return {
@@ -162,7 +180,7 @@ export const seriesVoiceDna = `SERIES VOICE DNA — 主流国漫配音，全剧�
 
 听感参考国产仙侠/奇幻国漫配音：口齿清楚，有角色口吻，略带表演弹性，说话有来势。
 默认年轻。非年长角色年龄段只许幼童、少年、青年，禁止中年、老年。
-年轻角色用清亮、有青春感的声线，不要苍劲、沙哑沧桑、中年沉稳、过慢念稿、广播腔、纪录片旁白、欧美低沉暗黑。
+年轻角色用清亮、偏薄、有青春感的声线。青年/少年男性 pitch 只许 mid、mid-high 或 high，禁止 low 和 mid-low；语速不要 slow 或 slightly-slow。不要苍劲、沙哑沧桑、中年沉稳、中低音浑厚、过慢念稿、广播腔、纪录片旁白、欧美低沉暗黑。
 不要死板平铺。活泼是「有口气、有配音感」，不是每个角色都卖萌或元气偶像。
 剧情明确年长的角色才用中年/老年，仍保持国漫配音的清晰口吻，不要话剧老生。
 声音卡只写听得见的声线，不写外貌、服饰、场景、本集天气。`;
@@ -173,7 +191,7 @@ export function voiceCardPrompt(
   lore: string,
   lines: string[],
 ) {
-  return `你是配音声音设计。只根据角色稳定身份和故事设定，填写结构化声音卡和试听稿。必须遵守作品声音气质。不要写外貌、服饰、天气、场景。试听稿 2～4 句、80～200 字，口吻像该角色但不是分镜台词，禁止自我介绍和剧透。只返回 JSON {"voicePortrait":{"gender":"male或female","ageBand":"child|teen|youth|adult|elder","pitch":"low|mid-low|mid|mid-high|high","timbre":"听感短词","pace":"slow|slightly-slow|medium|slightly-fast","accent":"口音","baselineEmotion":"一贯气质","avoid":["禁忌"]},"sampleText":"试听稿"}。
+  return `你是配音声音设计。只根据角色稳定身份和故事设定，填写结构化声音卡和试听稿。必须遵守作品声音气质。不要写外貌、服饰、天气、场景。试听稿 2～4 句、80～200 字，口吻像该角色但不是分镜台词，禁止自我介绍和剧透。年轻角色音色写清亮、偏薄、有青春感，不要温厚沉稳。只返回 JSON {"voicePortrait":{"gender":"male或female","ageBand":"child|teen|youth|adult|elder","pitch":"low|mid-low|mid|mid-high|high","timbre":"听感短词","pace":"slow|slightly-slow|medium|slightly-fast","accent":"口音","baselineEmotion":"一贯气质","avoid":["禁忌"]},"sampleText":"试听稿"}。
 ${seriesVoiceDna}
 角色：${name}
 身份：${identity}

@@ -88,6 +88,12 @@ export function collapseLocationLooks<
   return assets;
 }
 
+export function lookSheetAssets<
+  T extends { sourceUsage?: "view" | "extract" | "variant" },
+>(assets: T[]) {
+  return assets.filter((asset) => asset.sourceUsage !== "view");
+}
+
 export function attachShotLookViews<
   T extends {
     id: string;

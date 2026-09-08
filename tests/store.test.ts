@@ -152,7 +152,7 @@ describe("持久任务规则", () => {
     expect(s.visualStyle(p.id).prompt).toContain("SHARED STYLE DNA — never change across characters, props, or scenes:");
     s.setVisualTemplate(p.id, "donghua3d");
     expect(s.visualStyle(p.id).prompt).toContain("SHARED STYLE DNA — never change across characters, props, or scenes:");
-    expect(s.visualStyle(p.id).version).toBe("xianxia-style-dna-v2");
+    expect(s.visualStyle(p.id).version).toBe("xianxia-style-dna-v3");
     expect(s.visualStyle(p.id).characterModule).toContain("CHARACTER SHEET");
     expect(s.task(assets.id).revision).toBe(rev + 1);
   });

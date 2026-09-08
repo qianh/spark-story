@@ -874,9 +874,9 @@ test("Qwen 定妆写声音卡并用长句试听，跨集复用，再听一条不
   const portrait = {
     gender: "male" as const,
     ageBand: "youth" as const,
-    pitch: "mid-low" as const,
+    pitch: "mid" as const,
     timbre: "清冷、偏薄、不浑厚",
-    pace: "slightly-slow" as const,
+    pace: "medium" as const,
     accent: "标准普通话，无方言",
     baselineEmotion: "克制、冷、不煽情",
     avoid: ["广告腔", "卖萌", "朗诵", "读画面"],
@@ -1030,9 +1030,9 @@ test("声音区可单独写声音卡并试听，不重做定妆图；重写画�
   const portrait = {
     gender: "male" as const,
     ageBand: "youth" as const,
-    pitch: "mid-low" as const,
+    pitch: "mid" as const,
     timbre: "清冷、偏薄、不浑厚",
-    pace: "slightly-slow" as const,
+    pace: "medium" as const,
     accent: "标准普通话，无方言",
     baselineEmotion: "克制、冷、不煽情",
     avoid: ["广告腔", "卖萌", "朗诵", "读画面"],
@@ -1258,4 +1258,18 @@ test("连续视频保留原声音轨，独立配音结束后仍能听见生成�
   let energy = 0;
   for (let i = 0; i < bytes.length; i += 2) energy += bytes.readInt16LE(i) ** 2;
   expect(Math.sqrt(energy / (bytes.length / 2))).toBeGreaterThan(50);
+});
+
+test("删除生成素材会失效缓存，相同请求重新生成", async () => {
+  const f = await fixture();
+  const media = new MediaService(f.store, f.root);
+  const task = f.store.one<Task>("SELECT * FROM tasks WHERE projectId=? AND stage=3", f.project.id)!;
+  const signal = new AbortController().signal;
+  const first = await media.ensure(task.id, 1, "image", "删除后重试", [], {}, signal);
+  await media.files.removeMany(f.project.id, [first]);
+  expect(f.store.one("SELECT id FROM media_jobs WHERE outputId=? AND status='completed'", first)).toBeNull();
+  const second = await media.ensure(task.id, 1, "image", "删除后重试", [], {}, signal);
+  expect(second).not.toBe(first);
+  expect(media.files.get(second).id).toBe(second);
+  expect(f.counts().submissions).toBe(2);
 });

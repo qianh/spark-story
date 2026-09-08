@@ -15,15 +15,22 @@ import {
 const shen = {
   gender: "male" as const,
   ageBand: "youth" as const,
-  pitch: "mid-low" as const,
+  pitch: "mid" as const,
   timbre: "清冷、偏薄、不浑厚",
-  pace: "slightly-slow" as const,
+  pace: "medium" as const,
   accent: "标准普通话，无方言",
   baselineEmotion: "克制、冷、不煽情",
   avoid: ["广告腔", "卖萌", "朗诵", "读画面"],
 };
 const audition =
   "我只问她还活着没有。先把人带离石阶，再谈其余。剑还在腰侧，这一夜不许任何人靠近。青梧的规矩不是拿来吓孩子的，是拿来护人的。山门空着，谁来都要先过我这一关，没有例外。";
+
+test("声音卡提示禁止青年用中低音", () => {
+  const prompt = voiceCardPrompt("沈不言", "男性，青年剑修。", "护山。", []);
+  expect(prompt).toContain("mid、mid-high 或 high");
+  expect(prompt).toContain("禁止 low 和 mid-low");
+  expect(prompt).toContain("青春感");
+});
 
 test("从稳定身份解析声线键，画面状态不影响", () => {
   expect(parseVoiceIdentity("男性，青年剑修。")).toEqual({
@@ -50,14 +57,37 @@ test("从稳定身份解析声线键，画面状态不影响", () => {
 test("编译 instruct 只用听感，拒绝把湿袍写进声音", () => {
   const text = compileVoiceInstruct(shen);
   expect(text).toContain("青年男性");
-  expect(text).toContain("中低音");
+  expect(text).toContain("中音");
+  expect(text).toContain("偏年轻");
+  expect(text).toContain("青春感");
   expect(text).toContain("清冷、偏薄、不浑厚");
+  expect(text).toContain("中音，音色");
+  expect(text).not.toContain("中低音，");
   expect(text).not.toMatch(/袍|骨|雨|叶|皮肤/);
   expect([...text].length).toBeGreaterThanOrEqual(30);
   expect([...text].length).toBeLessThanOrEqual(120);
   expect(() =>
     compileVoiceInstruct({ ...shen, timbre: "湿袍贴身的冷白皮肤" }),
   ).toThrow("画面");
+});
+
+test("年轻角色拒绝中低音和慢语速，避免听成中年", () => {
+  expect(() =>
+    compileVoiceInstruct({ ...shen, pitch: "mid-low" }),
+  ).toThrow("中低音");
+  expect(() => compileVoiceInstruct({ ...shen, pitch: "low" })).toThrow("低音");
+  expect(() => compileVoiceInstruct({ ...shen, pace: "slow" })).toThrow("慢语速");
+  expect(() =>
+    compileVoiceInstruct({ ...shen, pace: "slightly-slow" }),
+  ).toThrow("慢语速");
+  expect(
+    compileVoiceInstruct({
+      ...shen,
+      ageBand: "elder",
+      pitch: "mid-low",
+      pace: "slow",
+    }),
+  ).toContain("老年男性");
 });
 
 test("试听稿必须是长句且不得照抄分镜台词", () => {
@@ -119,6 +149,17 @@ test("文本模型返回的声音卡与设定打架或含画面词时拒绝", ()
       "男性，青年剑修。",
     ),
   ).toThrow("不一致");
+  expect(() =>
+    completeVoiceSample(
+      draft,
+      {
+        voicePortrait: { ...shen, pitch: "mid-low" },
+        sampleText: audition,
+      },
+      ["还活着。"],
+      "男性，青年剑修。",
+    ),
+  ).toThrow("中低音");
 });
 
 test("无台词幼女不配音；CustomVoice 幼童待选型；VoiceDesign 可写卡", () => {

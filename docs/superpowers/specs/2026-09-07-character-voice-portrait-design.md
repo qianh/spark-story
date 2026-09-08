@@ -75,7 +75,7 @@ VoiceDesign 不能当声音克隆。本规格降低的是提示词方向漂移�
 
 沈不言示例：
 
-> 青年男性，中低音，音色清冷、偏薄、不浑厚。语速偏慢，吐字清楚。标准普通话，无方言。情绪底色克制、冷、不煽情。不要广告腔、卖萌、朗诵、读画面。
+> 青年男性，中音，音色清冷、偏薄、不浑厚。偏年轻、有青春感。语速中，吐字清楚。标准普通话，无方言。情绪底色克制、冷、不煽情。不要广告腔、卖萌、朗诵、读画面。
 
 编译目标 30～80 字，硬上限 120 字。若命中画面词（衣、袍、发、骨、鼻、眉、靴、雨、叶、绣、锁骨、皮肤、场景等），视为不合格，不调用 TTS。
 
@@ -86,9 +86,9 @@ VoiceDesign 不能当声音克隆。本规格降低的是提示词方向漂移�
   "voicePortrait": {
     "gender": "male",
     "ageBand": "youth",
-    "pitch": "mid-low",
+    "pitch": "mid",
     "timbre": "清冷、偏薄、不浑厚",
-    "pace": "slightly-slow",
+    "pace": "medium",
     "accent": "标准普通话，无方言",
     "baselineEmotion": "克制、冷、不煽情",
     "avoid": ["广告腔", "卖萌", "朗诵", "读画面"]
@@ -115,9 +115,9 @@ VoiceDesign 不能当声音克隆。本规格降低的是提示词方向漂移�
   "voicePortrait": {
     "gender": "male",
     "ageBand": "youth",
-    "pitch": "mid-low",
+    "pitch": "mid",
     "timbre": "清冷、偏薄、不浑厚",
-    "pace": "slightly-slow",
+    "pace": "medium",
     "accent": "标准普通话，无方言",
     "baselineEmotion": "克制、冷、不煽情",
     "avoid": ["广告腔", "卖萌", "朗诵", "读画面"]

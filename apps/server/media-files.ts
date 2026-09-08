@@ -1,11 +1,24 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import sharp from "sharp";
 import { Store } from "./store";
 import type { MediaFile, Timeline } from "../../packages/media";
 import { durationIssues } from "../../packages/production";
+
+export function referencedMediaIds(content: string) {
+  const ids = new Set<string>();
+  const named =
+    /"(?:imageId|audioId|videoId|musicId|soundId|previewId|exportId|dialogueTrackId|mixedTrackId|selectedCandidateId|sourceAudioId|subtitleId|fileId)"\s*:\s*"([^"]+)"/g;
+  for (const match of content.matchAll(named)) ids.add(match[1]);
+  const lists =
+    /"(?:candidates|generationReferenceIds)"\s*:\s*\[([^\]]*)\]/g;
+  for (const match of content.matchAll(lists))
+    for (const id of match[1].match(/"([^"]+)"/g) || [])
+      ids.add(id.slice(1, -1));
+  return [...ids];
+}
 export async function command(
   binary: string,
   args: string[],
@@ -161,6 +174,66 @@ export class MediaFiles {
       f.createdAt,
     ]);
     return f;
+  }
+  async removeMany(projectId: string, ids: string[]) {
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (!unique.length) throw Error("请选择要删除的素材");
+    if (
+      this.store.one(
+        "SELECT id FROM tasks WHERE projectId=? AND status IN ('running','reviewing','coordinating')",
+        projectId,
+      )
+    )
+      throw Error("任务正在执行，请先中断再删除素材");
+    const rows = unique.map((id) => this.get(id, projectId));
+    const deleted = new Set(unique);
+    // Validate the whole batch before changing records or touching shared files.
+    const disposable: string[] = [];
+    const artifacts = this.store.list<{
+      id: string; content: string; status: string; stage: number;
+      revision: number; currentRevision: number;
+    }>(`SELECT a.*, t.stage, t.revision AS currentRevision
+        FROM artifacts a JOIN tasks t ON t.id=a.taskId`);
+    for (const artifact of artifacts) {
+      const refs = referencedMediaIds(artifact.content);
+      if (!refs.some((id) => deleted.has(id))) continue;
+      if (artifact.status === "candidate" && artifact.stage === 3 &&
+          artifact.revision === artifact.currentRevision &&
+          refs.every((id) => deleted.has(id))) {
+        disposable.push(artifact.id);
+      } else throw Error("素材仍被产物引用，不能删除；请先解除引用");
+    }
+    for (const table of ["asset_library", "voice_library"]) {
+      const entries = this.store.list<{ data: string }>(`SELECT data FROM ${table}`);
+      if (entries.some((entry) => referencedMediaIds(entry.data).some((id) => deleted.has(id))))
+        throw Error("素材仍被资产库或声音库引用，不能删除；请先解除引用");
+    }
+    const jobs = this.store.list<{ inputs: string }>(
+      "SELECT inputs FROM media_jobs WHERE status NOT IN ('completed','failed','cancelled')",
+    );
+    if (jobs.some((job) => (JSON.parse(job.inputs) as string[]).some((id) => deleted.has(id))))
+      throw Error("素材仍被媒体任务引用，不能删除");
+    this.store.db.transaction(() => {
+      for (const id of disposable)
+        this.store.db.run("DELETE FROM artifacts WHERE id=?", [id]);
+      for (const row of rows) {
+        this.store.db.run(
+          "UPDATE media_jobs SET status='failed', outputId='', remoteId='', error='输出素材已删除', updatedAt=? WHERE outputId=?",
+          [new Date().toISOString(), row.id],
+        );
+        this.store.db.run("DELETE FROM media_files WHERE id=?", [row.id]);
+      }
+    })();
+    for (const row of rows) {
+      const shared = this.store.one("SELECT id FROM media_files WHERE path=?", row.path);
+      if (!shared) await unlink(row.path).catch(() => {});
+    }
+    this.store.event(
+      projectId,
+      "",
+      "media.deleted",
+      `已删除 ${unique.length} 个素材。`,
+    );
   }
   async dataUrl(id: string, projectId: string) {
     const f = this.get(id, projectId);

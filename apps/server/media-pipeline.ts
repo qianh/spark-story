@@ -4,6 +4,7 @@ import {
   assertCanonicalLooks,
   assertCharacterContent,
   characterContentTemplate,
+  migrateLegacyContent,
   productionVisualPrompt,
 } from "../../packages/visual-style";
 import {
@@ -197,13 +198,14 @@ export class MediaPipeline {
   }
   async prepareCharacterContent(task: Task, asset: AssetPlan["assets"][number], assets: AssetPlan["assets"], stylePrompt: string, signal: AbortSignal) {
     if (asset.kind !== "character" || !(stylePrompt.startsWith("STYLE LOCK —") || stylePrompt.startsWith("SHARED STYLE DNA"))) return;
+    asset.prompt = migrateLegacyContent(asset.prompt);
     if (asset.promptFormat === "character-content-v1") {
       assertCharacterContent(asset.prompt);
       return;
     }
     const result = parseResult(await this.runtime.call(
       task, crypto.randomUUID(), this.runtime.store.binding("文本模型"),
-      `只将以下单个角色的已有设定转写为 CONTENT，不改变身份、外貌、服装、年龄，不使用其他角色的设定；未知信息不编造。删除旧描述中的构图背景和光影，内容不含 cinematic、史诗、仙气、电影感等风格词。填写全部字段，无则写 none。单独规划的武器在 Unique accessories 写 no weapon。仅返回 JSON {"prompt":"填好的 CONTENT 全文"}。模板：\n${characterContentTemplate}\n固定画风（不输出、不修改）：\n${stylePrompt}\n该角色设定：${JSON.stringify({ name: asset.name, prompt: asset.prompt, identity: asset.identity, state: asset.state })}\n独立道具名称：${JSON.stringify(assets.filter(a => a.kind === "prop").map(a => a.name))}`,
+      `只将以下单个角色的已有设定转写为 CONTENT，不改变身份、外貌、服装、年龄，不使用其他角色的设定；未知信息不编造。删除旧描述中的构图背景和光影，内容不含 cinematic、史诗、仙气、电影感等风格词。填写全部字段，无则写 none。单独规划的武器在 Other accessories 写 no weapon。仅返回 JSON {"prompt":"填好的 CONTENT 全文"}。模板：\n${characterContentTemplate}\n固定画风（不输出、不修改）：\n${stylePrompt}\n该角色设定：${JSON.stringify({ name: asset.name, prompt: asset.prompt, identity: asset.identity, state: asset.state })}\n独立道具名称：${JSON.stringify(assets.filter(a => a.kind === "prop").map(a => a.name))}`,
       signal,
     ));
     if (!result || typeof result !== "object" || !("prompt" in result) || typeof result.prompt !== "string") throw Error("角色 CONTENT 转写未返回有效文本");
@@ -236,7 +238,7 @@ export class MediaPipeline {
     const { store, media } = this.runtime;
     const paths = [media.files.get(imageId, task.projectId).path, ...referenceIds.map(id => media.files.get(id, task.projectId).path)];
     return reviewSchema.parse(parseResult(await this.runtime.call(task, crypto.randomUUID(), store.binding("主模型"),
-      `审核实际图片，第一张为候选，后续为生成参考。选定作品画风：${productionVisualPrompt(store.visualStyle(task.projectId))}。资产：${JSON.stringify({name:asset.name,kind:asset.kind,prompt:asset.prompt,identity:asset.identity,state:asset.state,sourceAssetId:asset.sourceAssetId})}。检查主体类型正确、角色/服装或建筑形制符合设定、实际画面为同一仙侠3D制作质感而非真人写真或旅游摄影、参考角色的身份未串入其他资产、全貌可读。任何不符都判失败；不能因为提示词关键词齐全而通过。不确定明确写出。返回 JSON {"pass":boolean,"feedback":"具体画面证据和问题"}。`, signal, paths)));
+      `审核实际图片，第一张为候选，后续为生成参考。选定作品画风：${productionVisualPrompt(store.visualStyle(task.projectId))}。资产：${JSON.stringify({name:asset.name,kind:asset.kind,prompt:asset.prompt,identity:asset.identity,state:asset.state,sourceAssetId:asset.sourceAssetId})}。检查主体类型正确、角色/服装或建筑形制符合设定、实际画面是虚构仙侠三维片场（材质写实，世界是设计出来的），不是地球风景摄影、景区实拍或博物馆文物照、参考角色的身份未串入其他资产、全貌可读。任何不符都判失败；不能因为提示词关键词齐全而通过。不确定明确写出。返回 JSON {"pass":boolean,"feedback":"具体画面证据和问题"}。`, signal, paths)));
   }
 
   async retryAsset(task: Task, assetId: string, signal: AbortSignal) {
@@ -268,7 +270,6 @@ export class MediaPipeline {
       await this.prepareCharacterContent(task, asset, data.assets, style.prompt, signal);
     const refs = this.assetReferences(task, asset, data.assets, base?.imageId);
     const generationPrompt =
-      asset.generationPrompt ||
       assetVisualPrompt(style, asset, data.assets) + refs.notes;
     const candidateId = await media.ensure(
       task.id,
