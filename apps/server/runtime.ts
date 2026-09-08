@@ -11,7 +11,6 @@ import { ProgressTracker } from "./progress";
 import {
   reviewSchema,
   interventionSchema,
-  templates,
   type Task,
   type Connection,
   type Artifact,
@@ -157,7 +156,12 @@ export class Runtime {
       if (this.active.get(task.id) === abort) this.active.delete(task.id);
     });
   }
-  async retryVoices(taskId: string, revision: number, character?: string) {
+  async retryVoices(
+    taskId: string,
+    revision: number,
+    character?: string,
+    rewritePortrait = false,
+  ) {
     const task = this.store.task(taskId);
     if (task.revision !== revision) throw Error("任务版本已变化");
     if (this.active.has(task.id))
@@ -165,7 +169,12 @@ export class Runtime {
     const abort = new AbortController();
     this.active.set(task.id, abort);
     try {
-      return await this.pipeline.retryVoices(task, character, abort.signal);
+      return await this.pipeline.retryVoices(
+        task,
+        character,
+        abort.signal,
+        rewritePortrait,
+      );
     } finally {
       if (this.active.get(task.id) === abort) this.active.delete(task.id);
     }
@@ -205,7 +214,7 @@ export class Runtime {
         return;
       }
       const project = this.store.project(task.projectId);
-      const style = templates.find((t) => t.id === project.template)!;
+      const style = this.store.visualStyle(task.projectId);
       let feedback = task.instruction;
       for (let round = task.round; round <= 3; round++) {
         if (

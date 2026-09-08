@@ -21,6 +21,11 @@ await Bun.write(
     ) + 1,
   ),
 );
+const instructions = await Bun.file(join(cwd, "prompt.txt")).text();
+const exactPrompt = JSON.parse(instructions.trim().split("\n").at(-1)!);
+console.log(JSON.stringify({ type: "assistant", message: { content: [{
+  type: "tool_use", id: "call1", name: "image_gen", input: { prompt: exactPrompt, aspect_ratio: "1:1" },
+}] } }));
 const path = join(cwd, "generated.png");
 await sharp({
   create: { width: 64, height: 64, channels: 3, background: "blue" },

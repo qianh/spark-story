@@ -735,6 +735,25 @@ test("试听支持空列表、单角色和全部强制重做，失败保留完�
       data: { summary: "角色", assets, voices: [] },
     }),
   );
+  f.store.upstream = () =>
+    [
+      {
+        content: JSON.stringify({
+          type: "shot-plan",
+          data: {
+            summary: "台词",
+            shots: ["甲", "乙"].map((name) => ({
+              id: name,
+              title: name,
+              prompt: name,
+              duration: 1,
+              speaker: name,
+              dialogue: "已确认台词",
+            })),
+          },
+        }),
+      },
+    ] as Artifact[];
   let calls = 0,
     failAt = 0;
   const pipeline = new MediaPipeline({
@@ -785,4 +804,405 @@ test("试听支持空列表、单角色和全部强制重做，失败保留完�
   expect(saved.status).toBe("candidate");
   expect(f.store.task(task.id).status).toBe("needs_user");
   await expect(run("不存在")).rejects.toThrow("没有可生成");
+});
+
+test("Qwen 定妆写声音卡并用长句试听，跨集复用，再听一条不改卡", async () => {
+  const f = await fixture();
+  const { MediaPipeline } = await import("../apps/server/media-pipeline");
+  const { compileVoiceInstruct } = await import("../apps/server/voice-casting");
+  const task = f.store.tasks(f.project.id).find((t) => t.stage === 3)!;
+  const qwen: Connection = {
+    ...f.c,
+    provider: "qwen-tts",
+    transport: "cli",
+    executable: "/usr/bin/python",
+    model: "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit",
+  };
+  const portrait = {
+    gender: "male" as const,
+    ageBand: "youth" as const,
+    pitch: "mid-low" as const,
+    timbre: "清冷、偏薄、不浑厚",
+    pace: "slightly-slow" as const,
+    accent: "标准普通话，无方言",
+    baselineEmotion: "克制、冷、不煽情",
+    avoid: ["广告腔", "卖萌", "朗诵", "读画面"],
+  };
+  const audition =
+    "我只问她还活着没有。先把人带离石阶，再谈其余。剑还在腰侧，这一夜不许任何人靠近。青梧的规矩不是拿来吓孩子的，是拿来护人的。山门空着，谁来都要先过我这一关，没有例外。";
+  const prompts: string[] = [];
+  const speech: { prompt: string; options: any }[] = [];
+  const pipeline = new MediaPipeline({
+    store: f.store,
+    active: new Map(),
+    call: async (_t: Task, _a: string, _c: Connection, prompt: string) => {
+      prompts.push(prompt);
+      return JSON.stringify({ voicePortrait: portrait, sampleText: audition });
+    },
+    media: {
+      connection: () => qwen,
+      ensure: async (
+        _id: string,
+        _rev: number,
+        kind: string,
+        prompt: string,
+        _in: string[],
+        options: any,
+      ) => {
+        if (kind === "image") return "img-1";
+        speech.push({ prompt, options });
+        return "audio-" + speech.length;
+      },
+    },
+  } as unknown as Runtime);
+  const edited = {
+    type: "assets",
+    data: {
+      summary: "定妆",
+      assets: [
+        {
+          id: "CHAR-SHEN",
+          name: "沈不言",
+          kind: "character",
+          prompt: "定妆",
+          identity: "男性，青年剑修。",
+          state: "外袍被秋雨湿透",
+        },
+      ],
+      voices: [],
+    },
+  };
+  const storyTask = f.store.tasks(f.project.id).find((t) => t.stage === 7)!;
+  const shotTask = f.store.tasks(f.project.id).find((t) => t.stage === 8)!;
+  const upstream = [
+    {
+      taskId: storyTask.id,
+      content: JSON.stringify({
+        type: "story",
+        bible: "沈不言是青梧宗青年剑修，话少、护人。",
+        chapters: [
+          {
+            id: "CH001",
+            title: "雨",
+            content: "沈不言在山门拾幼。".repeat(20),
+            continuity: "幼女入怀",
+            beats: [{ id: "CH001-B001", eventId: "E1", description: "拾幼" }],
+          },
+        ],
+      }),
+    },
+    {
+      taskId: shotTask.id,
+      content: JSON.stringify({
+        type: "shot-plan",
+        data: {
+          summary: "分镜",
+          shots: [
+            {
+              id: "SH001",
+              title: "救人",
+              prompt: "救人",
+              duration: 1,
+              assetIds: ["CHAR-SHEN"],
+              speaker: "沈不言",
+              dialogue: "还活着。",
+            },
+          ],
+        },
+      }),
+    },
+  ] as Artifact[];
+  const first = await pipeline.produce(
+    task,
+    "test",
+    f.c,
+    upstream,
+    "",
+    edited,
+    new AbortController().signal,
+    () => {},
+  );
+  expect(prompts.some((p) => p.includes("声音卡"))).toBe(true);
+  expect(prompts.some((p) => p.includes("湿透"))).toBe(false);
+  expect(speech[0].prompt).toBe(audition);
+  expect(speech[0].options.instructions).toContain("青年男性");
+  expect(speech[0].options.instructions).not.toContain("湿透");
+  expect("voices" in first.data && first.data.voices[0].sampleText).toBe(
+    audition,
+  );
+  f.store.registerAssets(task, JSON.stringify(first));
+  prompts.length = 0;
+  speech.length = 0;
+  const second = await pipeline.produce(
+    task,
+    "test",
+    f.c,
+    upstream,
+    "",
+    edited,
+    new AbortController().signal,
+    () => {},
+  );
+  expect(prompts.filter((p) => p.includes("声音卡"))).toHaveLength(0);
+  expect(speech).toHaveLength(0);
+  expect("voices" in second.data && second.data.voices[0].audioId).toBe(
+    "audio-1",
+  );
+  f.store.publish(task.id, task.revision, JSON.stringify(second));
+  const retried = await pipeline.retryVoices(
+    f.store.task(task.id),
+    "沈不言",
+    new AbortController().signal,
+  );
+  expect(retried.data.voices[0].sampleText).toBe(audition);
+  expect(retried.data.voices[0].instructions).toBe(
+    compileVoiceInstruct(portrait),
+  );
+  expect(retried.data.voices[0].audioId).toBe("audio-1");
+  expect(speech[0].prompt).toBe(audition);
+});
+
+test("声音区可单独写声音卡并试听，不重做定妆图；重写画像才换卡", async () => {
+  const f = await fixture();
+  const { MediaPipeline } = await import("../apps/server/media-pipeline");
+  const task = f.store.tasks(f.project.id).find((t) => t.stage === 3)!;
+  const qwen: Connection = {
+    ...f.c,
+    provider: "qwen-tts",
+    transport: "cli",
+    executable: "/usr/bin/python",
+    model: "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit",
+  };
+  f.store.db.run("INSERT INTO bindings VALUES(?,?)", ["文本模型", f.c.id]);
+  const portrait = {
+    gender: "male" as const,
+    ageBand: "youth" as const,
+    pitch: "mid-low" as const,
+    timbre: "清冷、偏薄、不浑厚",
+    pace: "slightly-slow" as const,
+    accent: "标准普通话，无方言",
+    baselineEmotion: "克制、冷、不煽情",
+    avoid: ["广告腔", "卖萌", "朗诵", "读画面"],
+  };
+  const audition = (n: number) =>
+    `我只问她还活着没有。先把人带离石阶，再谈其余。剑还在腰侧，这一夜不许任何人靠近。青梧的规矩不是拿来吓孩子的，是拿来护人的。山门空着，谁来都要先过我这一关，没有例外${n}。`;
+  let version = 1;
+  const kinds: string[] = [];
+  const pipeline = new MediaPipeline({
+    store: f.store,
+    active: new Map(),
+    call: async () =>
+      JSON.stringify({
+        voicePortrait: portrait,
+        sampleText: audition(version),
+      }),
+    media: {
+      connection: () => qwen,
+      ensure: async (
+        _id: string,
+        _rev: number,
+        kind: string,
+        prompt: string,
+      ) => {
+        kinds.push(kind);
+        return kind + "-" + prompt.slice(-1);
+      },
+    },
+  } as unknown as Runtime);
+  const storyTask = f.store.tasks(f.project.id).find((t) => t.stage === 7)!;
+  const shotTask = f.store.tasks(f.project.id).find((t) => t.stage === 8)!;
+  f.store.upstream = () =>
+    [
+      {
+        taskId: storyTask.id,
+        content: JSON.stringify({
+          type: "story",
+          bible: "沈不言是青梧宗青年剑修，话少、护人。",
+          chapters: [
+            {
+              id: "CH001",
+              title: "雨",
+              content: "沈不言在山门拾幼。".repeat(20),
+              continuity: "幼女入怀",
+              beats: [{ id: "CH001-B001", eventId: "E1", description: "拾幼" }],
+            },
+          ],
+        }),
+      },
+      {
+        taskId: shotTask.id,
+        content: JSON.stringify({
+          type: "shot-plan",
+          data: {
+            summary: "分镜",
+            shots: [
+              {
+                id: "SH001",
+                title: "救人",
+                prompt: "救人",
+                duration: 1,
+                speaker: "沈不言",
+                dialogue: "还活着。",
+              },
+            ],
+          },
+        }),
+      },
+    ] as Artifact[];
+  f.store.publish(
+    task.id,
+    task.revision,
+    JSON.stringify({
+      type: "assets",
+      data: {
+        summary: "定妆",
+        assets: [
+          {
+            id: "CHAR-SHEN",
+            name: "沈不言",
+            kind: "character",
+            prompt: "定妆",
+            identity: "男性，青年剑修。",
+            state: "外袍被秋雨湿透",
+            imageId: "keep-image",
+          },
+        ],
+        voices: [
+          {
+            character: "沈不言",
+            voice: "VoiceDesign",
+            sampleText: "还活着。",
+            instructions: "角色设定：外袍被秋雨湿透",
+            status: "ready",
+            audioId: "old-audio",
+          },
+        ],
+      },
+    }),
+  );
+  const created = await pipeline.retryVoices(
+    f.store.task(task.id),
+    "沈不言",
+    new AbortController().signal,
+  );
+  expect(created.data.assets[0].imageId).toBe("keep-image");
+  expect(kinds).toEqual(["speech"]);
+  expect(created.data.voices[0].sampleText).toBe(audition(1));
+  expect(created.data.voices[0].instructions).not.toContain("湿透");
+  expect(created.data.voices[0].voicePortrait?.gender).toBe("male");
+  f.store.publish(task.id, task.revision, JSON.stringify(created));
+  version = 2;
+  kinds.length = 0;
+  const rewritten = await pipeline.retryVoices(
+    f.store.task(task.id),
+    "沈不言",
+    new AbortController().signal,
+    true,
+  );
+  expect(rewritten.data.assets[0].imageId).toBe("keep-image");
+  expect(kinds).toEqual(["speech"]);
+  expect(rewritten.data.voices[0].sampleText).toBe(audition(2));
+});
+
+test("连续视频保留原声音轨，独立配音结束后仍能听见生成的背景声", async () => {
+  const f = await fixture();
+  const files = new MediaFiles(f.store, f.root);
+  const t = f.store.tasks(f.project.id).find((t) => t.stage === 5)!;
+  const signal = new AbortController().signal;
+  const path = join(f.root, "with-sound.mp4");
+  await command("ffmpeg", [
+    "-y",
+    "-v",
+    "error",
+    "-i",
+    join(f.root, "clip.mp4"),
+    "-f",
+    "lavfi",
+    "-i",
+    "sine=frequency=220:duration=1",
+    "-map",
+    "0:v",
+    "-map",
+    "1:a",
+    "-c:v",
+    "copy",
+    "-c:a",
+    "aac",
+    "-t",
+    "1",
+    path,
+  ]);
+  const video = await files.add(
+    f.project.id,
+    t.id,
+    t.revision,
+    "tone.mp4",
+    await readFile(path),
+    "video/mp4",
+  );
+  const stitched = await files.stitch(
+    f.project.id,
+    t.id,
+    t.revision,
+    [
+      { id: video.id, duration: 1 },
+      { id: video.id, duration: 1 },
+    ],
+    signal,
+  );
+  expect(JSON.parse(files.get(stitched).metadata).hasAudio).toBe(true);
+  const source = await files.nativeAudio(stitched, signal);
+  const voice = await files.add(
+    f.project.id,
+    t.id,
+    t.revision,
+    "voice.mp3",
+    await readFile(join(f.root, "voice.mp3")),
+    "audio/mpeg",
+  );
+  const timeline = timelineSchema.parse({
+    subtitles: false,
+    shots: [
+      {
+        id: "s1",
+        title: "声音",
+        prompt: "带环境声的镜头",
+        duration: 1,
+        videoId: stitched,
+        audioId: voice.id,
+        sourceAudioId: source.id,
+      },
+    ],
+  });
+  const result = await files.render(
+    f.project.id,
+    t.id,
+    t.revision,
+    timeline,
+    false,
+    signal,
+  );
+  const pcm = join(f.root, "tail.pcm");
+  await command("ffmpeg", [
+    "-y",
+    "-v",
+    "error",
+    "-ss",
+    "0.8",
+    "-i",
+    files.get(result.exportId).path,
+    "-t",
+    "0.15",
+    "-f",
+    "s16le",
+    "-ac",
+    "1",
+    "-ar",
+    "48000",
+    pcm,
+  ]);
+  const bytes = await readFile(pcm);
+  let energy = 0;
+  for (let i = 0; i < bytes.length; i += 2) energy += bytes.readInt16LE(i) ** 2;
+  expect(Math.sqrt(energy / (bytes.length / 2))).toBeGreaterThan(50);
 });

@@ -1,4 +1,5 @@
 import { runQwenTts, qwenReady, qwenOptions } from "./qwen-tts";
+import { localTranscriptionOptions, transcribeLocal } from "./local-transcription";
 import { existsSync } from "node:fs";
 import { prepareVisualRequest } from "../../packages/media-profiles";
 import { runGrokMedia, grokResultPath } from "./grok-media";
@@ -117,7 +118,8 @@ export class MediaService {
         inputFiles[1].kind !== "audio")
     )
       throw Error("口型同步需要依次选择一个视频和一个配音文件");
-    if (c.provider === "qwen-tts") qwenOptions({ ...c.settings, ...options });
+    if (c.provider === "qwen-tts")
+      qwenOptions({ ...c.settings, ...options }, c.model);
     const prepared = prepareVisualRequest(c, kind, prompt, inputs.length, {
       ...c.settings,
       ...options,
@@ -723,6 +725,28 @@ export class MediaService {
     };
   }
   async transcribe(fileId: string, signal: AbortSignal) {
+    signal.throwIfAborted();
+    const bound = this.connection("speech");
+    if (bound.provider === "qwen-tts" && !bound.settings?.transcriptionConnectionId) {
+      const file = this.files.get(fileId);
+      const key = `local-whisper:${createHash("sha256").update(JSON.stringify(localTranscriptionOptions(bound))).digest("hex")}`;
+      const cached = this.store.one<{ text: string }>(
+        "SELECT text FROM media_transcripts WHERE fileId=? AND connectionId=?", fileId, key,
+      );
+      if (cached) return cached.text;
+      const event = (message: string) => this.store.event(file.projectId, file.taskId, "media.transcription", message);
+      event("配音已生成，正在本地转写核对台词；首次加载 Whisper 模型可能较慢");
+      const heartbeat = setInterval(() => event("本地语音审核仍在执行；已生成的配音保留，无需重新生成"), 15000);
+      try {
+        const text = await transcribeLocal(bound, file.path, signal);
+        signal.throwIfAborted();
+        this.store.db.run("INSERT OR REPLACE INTO media_transcripts VALUES(?,?,?)", [fileId, key, text]);
+        event("本地语音转写完成，继续主控审核");
+        return text;
+      } finally {
+        clearInterval(heartbeat);
+      }
+    }
     const file = this.files.get(fileId),
       speech = this.connection("speech"),
       c =
@@ -736,7 +760,7 @@ export class MediaService {
           : speech;
     if (!c || c.transport !== "api")
       throw Error(
-        "本地配音已保存；Qwen3-TTS 不提供语音识别，请在连接高级参数配置 transcriptionConnectionId 指向支持转写的 API 连接后继续审核",
+        "语音审核待处理：配音已保存，transcriptionConnectionId 必须指向支持转写的 API 连接；本地 Qwen 可移除该参数使用 Whisper",
       );
     const cached = this.store.one<{ text: string }>(
       "SELECT text FROM media_transcripts WHERE fileId=? AND connectionId=?",

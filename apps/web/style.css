@@ -1409,6 +1409,31 @@ html[data-theme="dark"] .episode-bar select {
   border-color: var(--accent);
   background: var(--accent-dim);
 }
+.style-detail-kicker {
+  margin: 0 0 8px;
+  font:
+    10px "Outfit",
+    sans-serif;
+  letter-spacing: 1.4px;
+  color: var(--muted);
+}
+.style-prompt-title {
+  margin: 18px 0 8px;
+  font-size: 13px;
+}
+.style-prompt {
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.7;
+  max-height: min(42vh, 380px);
+  overflow: auto;
+  padding: 14px 16px;
+  margin: 0 0 16px;
+  background: var(--elevated);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+}
 .style-art {
   position: relative;
   height: 200px;

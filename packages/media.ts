@@ -41,6 +41,27 @@ export type MediaJob = {
   updatedAt: string;
 };
 const ref = z.string();
+export const voicePortraitSchema = z.object({
+  gender: z.enum(["male", "female"]),
+  ageBand: z.enum(["child", "teen", "youth", "adult", "elder"]),
+  pitch: z.enum(["low", "mid-low", "mid", "mid-high", "high"]),
+  timbre: z.string().trim().min(1).max(20),
+  pace: z.enum(["slow", "slightly-slow", "medium", "slightly-fast"]),
+  accent: z.string().trim().min(1).max(20),
+  baselineEmotion: z.string().trim().min(1).max(20),
+  avoid: z.array(z.string().trim().min(1)).min(1),
+});
+export const voiceSampleSchema = z.object({
+  character: z.string(),
+  voice: z.string(),
+  sampleText: z.string(),
+  instructions: z.string().default(""),
+  castingNote: z.string().default(""),
+  status: z.enum(["ready", "not_required", "needs_voice"]).default("ready"),
+  audioId: ref.optional(),
+  voicePortrait: voicePortraitSchema.optional(),
+  voiceIdentityKey: z.string().default(""),
+});
 export const assetPlanSchema = z.object({
   summary: z.string(),
   assets: z
@@ -50,24 +71,18 @@ export const assetPlanSchema = z.object({
         name: z.string(),
         kind: z.enum(["character", "scene", "prop"]),
         prompt: z.string().min(1),
+        promptFormat: z.literal("visual-description-v1").optional(),
         identity: z.string().default(""),
         state: z.string().default(""),
         imageId: ref.optional(),
+        generationPrompt: z.string().optional(),
+        generationStyleVersion: z.string().optional(),
         libraryId: ref.optional(),
         baseLibraryId: ref.optional(),
       }),
     )
     .min(1),
-  voices: z
-    .array(
-      z.object({
-        character: z.string(),
-        voice: z.string(),
-        sampleText: z.string(),
-        audioId: ref.optional(),
-      }),
-    )
-    .default([]),
+  voices: z.array(voiceSampleSchema).default([]),
 });
 export const shotSchema = z.object({
   id: z.string().min(1),
@@ -77,6 +92,10 @@ export const shotSchema = z.object({
   sceneId: z.string().default(""),
   imagePrompt: z.string().default(""),
   motionPrompt: z.string().default(""),
+  soundPrompt: z.string().default(""),
+  musicPrompt: z.string().default(""),
+  sourceAudioId: ref.optional(),
+  sourceAudioVolume: z.number().min(0).max(2).default(0.3),
   camera: z.string().default(""),
   startState: z.string().default(""),
   endState: z.string().default(""),
@@ -116,6 +135,8 @@ export const timelineSchema = z.object({
   dialogueTrackId: ref.optional(),
   mixedTrackId: ref.optional(),
 });
+export type VoicePortrait = z.infer<typeof voicePortraitSchema>;
+export type VoiceSample = z.infer<typeof voiceSampleSchema>;
 export type AssetPlan = z.infer<typeof assetPlanSchema>;
 export type Storyboard = z.infer<typeof storyboardSchema>;
 export type Shot = z.infer<typeof shotSchema>;

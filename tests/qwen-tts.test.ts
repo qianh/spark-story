@@ -60,11 +60,26 @@ test("本地配音传递原文与情绪、校验 WAV、零预算复用、转写�
     expect(r.args).toContain("轻声、焦急");
     expect(await m.run(j.id)).toBe(id);
     expect(s.list("SELECT * FROM costs")).toHaveLength(0);
-    await expect(
-      m.transcribe(id, new AbortController().signal),
-    ).rejects.toThrow("不提供语音识别");
+    expect(await m.transcribe(id, new AbortController().signal)).toBe("实际音频转写");
+    expect(await m.transcribe(id, new AbortController().signal)).toBe("实际音频转写");
+    expect(s.list("SELECT * FROM media_transcripts")).toHaveLength(1);
+    expect(s.list("SELECT * FROM costs")).toHaveLength(0);
+    s.saveConnection({ ...c, settings: { transcriptionModel: "broken" } });
+    await expect(m.transcribe(id, new AbortController().signal)).rejects.toThrow("语音审核待处理");
+    expect(m.files.get(id).mime).toContain("wav");
+    expect(s.list("SELECT * FROM media_transcripts")).toHaveLength(1);
+    await expect(m.transcribe(id, AbortSignal.abort())).rejects.toThrow();
   } finally {
     s.db.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("VoiceDesign 接受描述而非预设音色，缺少描述在调用前拒绝", () => {
+  const model = "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit";
+  expect(connectionInput.safeParse({ ...c, model }).success).toBe(true);
+  expect(() => qwenOptions({}, model)).toThrow("人物声线描述");
+  expect(
+    qwenOptions({ instructions: "青年男性，清冷克制，普通话" }, model).voice,
+  ).toBe("VoiceDesign");
 });

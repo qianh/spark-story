@@ -20,6 +20,14 @@ const cli: Connection = {
   health: "installed",
   version: "test",
 };
+test("Grok 文生图原样传递已完成的中文提示词，不混入视频指导", () => {
+  const prompt = "高细节3D CGI仙侠，黑发青年，温和神情。";
+  const r = prepareVisualRequest(cli, "image", prompt, 0, { aspect: "9:16" });
+  expect(r.prompt).toBe(prompt);
+  expect(r.options.aspect).toBe("9:16");
+  expect(prepareVisualRequest(cli, "image", prompt, 0, { promptGuidance: "无文字" }).prompt)
+    .toBe(`${prompt}\n无文字`);
+});
 test("渠道时长与参考图限制、提示词编译不更改台词和事实", () => {
   const input = "幼女始终在怀中；台词：先走。";
   const r = prepareVisualRequest(cli, "video", input, 1, {
@@ -129,6 +137,9 @@ for (const mode of ["success", "after-output-error", "prose-only"])
           "utf8",
         ),
       ).toBe("1");
+      const call = JSON.parse(await readFile(join(root, "runs", "media-cli", job.id, "tool-call-1.json"), "utf8"));
+      expect(call.promptMatches).toBe(true);
+      expect(call.input.prompt).toBe("蓝球");
       expect(s.list("SELECT * FROM costs")).toHaveLength(0);
     } finally {
       s.db.close();

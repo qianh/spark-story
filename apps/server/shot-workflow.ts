@@ -25,6 +25,8 @@ export const shotReviewSchema = z.object({
           "prompt",
           "imagePrompt",
           "motionPrompt",
+          "soundPrompt",
+          "musicPrompt",
           "camera",
           "startState",
           "endState",
@@ -180,7 +182,7 @@ export async function produceShotPlan(
         "endState",
       ] as const)
         if (!s[field].trim()) issues.push(`${s.id} 缺少 ${field}`);
-      if (s.imageId || s.audioId || s.videoId)
+      if (s.imageId || s.audioId || s.videoId || s.sourceAudioId)
         issues.push(`${s.id} 文字分镜不能指定生成媒体 ID`);
       if (new Set(s.assetIds).size !== s.assetIds.length)
         issues.push(`${s.id} 资产引用重复`);
@@ -218,7 +220,7 @@ export async function produceShotPlan(
           board = storyboardSchema.parse(
             (rawCandidate = await call(
               text,
-              `你是分镜 Agent。把本集完整拆成文字分镜，不生成媒体。返回 {"summary":"说明","shots":[{"id":"SH001","title":"标题","prompt":"摘要","beatId":"节拍ID","sceneId":"地点ID","duration":5,"assetIds":["稳定资产ID"],"imagePrompt":"静态画面","motionPrompt":"动作","camera":"景别机位","startState":"起始状态","endState":"结束状态","dialogue":"原文台词或空","speaker":"人物或空","route":"separate"}]}。镜头按节拍排列，时长与剧本一致，画面人物及持续怀抱/携带的角色道具必须列入 assetIds。\n检查反馈：${feedback}\n可复用资产：${JSON.stringify(store.assetLibrary(task.projectId).map((a) => ({ id: a.id, name: a.name, identity: a.identity, state: a.state })))}\n${context}`,
+              `你是分镜 Agent。把本集完整拆成文字分镜，不生成媒体。返回 {"summary":"说明","shots":[{"id":"SH001","title":"标题","prompt":"摘要","beatId":"节拍ID","sceneId":"地点ID","duration":5,"assetIds":["稳定资产ID"],"imagePrompt":"静态画面","motionPrompt":"动作","soundPrompt":"同步环境与动作音效，安静场景填无","musicPrompt":"需要的背景器乐与情绪，不需要填无","camera":"景别机位","startState":"起始状态","endState":"结束状态","dialogue":"原文台词或空","speaker":"人物或空","route":"separate"}]}。镜头按节拍排列，时长与剧本一致，画面人物及持续怀抱/携带的角色道具必须列入 assetIds。\n检查反馈：${feedback}\n可复用资产：${JSON.stringify(store.assetLibrary(task.projectId).map((a) => ({ id: a.id, name: a.name, identity: a.identity, state: a.state })))}\n${context}`,
               `生成 ${round + 1}/3`,
             )),
           );

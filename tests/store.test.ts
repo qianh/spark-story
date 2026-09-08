@@ -125,6 +125,36 @@ describe("持久任务规则", () => {
     expect(() => s.setVisualTemplate(p.id, "cel")).toThrow("执行");
     expect(() => s.setVisualTemplate(p.id, "missing")).toThrow("视觉模板");
   });
+  test("画风说明写入作品，生成读作品锁定文本而不是启动时的另一份副本", () => {
+    const { s, p } = setup();
+    expect(s.visualStyle(p.id).prompt).toContain("赛璐璐");
+    s.setVisualTemplate(p.id, "donghua3d");
+    expect(s.visualStyle(p.id).id).toBe("donghua3d");
+    expect(s.visualStyle(p.id).prompt).toContain("高细节3D CGI仙侠");
+    const assets = s.one<any>("SELECT * FROM tasks WHERE stage=3")!;
+    const rev = assets.revision;
+    const row = s.one<{ data: string }>(
+      "SELECT data FROM project_settings WHERE projectId=?",
+      p.id,
+    )!;
+    s.db.run("UPDATE project_settings SET data=? WHERE projectId=?", [
+      JSON.stringify({
+        ...JSON.parse(row.data),
+        visual: {
+          id: "donghua3d",
+          name: "三维仙侠国漫",
+          prompt: "旧画风文本：高完成度东方仙侠",
+          version: "xianxia-3d-v3",
+        },
+      }),
+      p.id,
+    ]);
+    expect(s.visualStyle(p.id).prompt).toContain("旧画风文本");
+    s.setVisualTemplate(p.id, "donghua3d");
+    expect(s.visualStyle(p.id).prompt).toContain("高细节3D CGI仙侠");
+    expect(s.visualStyle(p.id).version).toBe("xianxia-3d-v8");
+    expect(s.task(assets.id).revision).toBe(rev + 1);
+  });
   test("重启保留未知费用并使旧执行失效", () => {
     const { s, p, t } = setup();
     s.claim(t.id, 1, {});

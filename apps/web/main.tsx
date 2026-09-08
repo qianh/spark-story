@@ -47,6 +47,7 @@ import {
   X,
 } from "lucide-react";
 import { ThemeSwitch } from "./theme";
+import { StyleForm } from "./StyleForm";
 import {
   roles,
   stages,
@@ -117,6 +118,7 @@ type Boot = {
   projects: Project[];
   connections: Connection[];
   bindings: { role: string; connectionId: string }[];
+  templates?: typeof templates;
 };
 const states: Record<string, string> = {
   ready: "准备就绪",
@@ -131,6 +133,11 @@ const states: Record<string, string> = {
   provider_blocked: "连接待处理",
   budget_blocked: "预算不足",
 };
+function taskStateLabel(task?: Task) {
+  if (task?.status === "provider_blocked" && /语音审核待处理|本地配音已保存/.test(task.error || ""))
+    return "语音审核待处理";
+  return states[task?.status || "blocked"] || "等待更新";
+}
 const stageIcons = [
   BookOpen,
   Layers,
@@ -308,7 +315,8 @@ function App() {
     board?.costs
       .filter((c) => c.status !== "released")
       .reduce((s, c) => s + c.amount, 0) || 0;
-  const currentTemplate = templates.find(
+  const catalog = boot.templates?.length ? boot.templates : templates;
+  const currentTemplate = catalog.find(
     (t) => t.id === board?.project.template,
   );
   const header =
@@ -501,7 +509,7 @@ function App() {
                         {task.episode ? `第 ${task.episode} 集 · ` : ""}
                         {task.title}
                         <span className={"status " + task.status}>
-                          {states[task.status]}
+                          {taskStateLabel(task)}
                         </span>
                       </h1>
                       <p>
@@ -788,11 +796,14 @@ function App() {
                               }),
                             )
                           }
-                          onRetryVoices={(character) =>
+                          onRetryVoices={(character, rewritePortrait) =>
                             act(() =>
                               api(`/tasks/${task.id}/retry-voices`, {
                                 revision: task.revision,
                                 ...(character ? { character } : {}),
+                                ...(rewritePortrait
+                                  ? { rewritePortrait: true }
+                                  : {}),
                               }),
                             )
                           }
@@ -1151,10 +1162,10 @@ function App() {
                         内置风格起点，为角色、场景和镜头建立一致的表达。可应用到当前作品，定妆会按新画风重做。
                       </p>
                     </div>
-                    <span className="tag">{templates.length} 个内置模板</span>
+                    <span className="tag">{catalog.length} 个内置模板</span>
                   </div>
                   <div className="template-grid">
-                    {templates.map((t, i) => (
+                    {catalog.map((t, i) => (
                       <button
                         className={
                           "template-card" +
@@ -1163,7 +1174,7 @@ function App() {
                         key={t.id}
                         onClick={() => {
                           if (!board) setModal("new:" + t.id);
-                          else setModal("style");
+                          else setModal("style:" + t.id);
                         }}
                       >
                         <StyleArt index={i} color={t.color} />
@@ -1591,7 +1602,7 @@ function App() {
                         </span>
                         <strong>{stages[i]}</strong>
                         <small>
-                          {states[taskAt(i)?.status || "blocked"] || "等待更新"}
+                          {taskStateLabel(taskAt(i))}
                         </small>
                       </button>
                     ))}
@@ -1666,7 +1677,7 @@ function App() {
                               {t.role}
                             </span>
                             <span className={"status " + t.status}>
-                              {states[t.status]}
+                              {taskStateLabel(t)}
                             </span>
                           </div>
                         </div>
@@ -1781,7 +1792,12 @@ function App() {
           }}
         >
           <section
-            className={"modal " + (modal.startsWith("new") ? "wide" : "")}
+            className={
+              "modal " +
+              (modal.startsWith("new") || modal.startsWith("style")
+                ? "wide"
+                : "")
+            }
             role="dialog"
             aria-modal="true"
             aria-label="工作台设置"
@@ -1857,9 +1873,12 @@ function App() {
                   <Plus size={16} /> 创建新项目
                 </button>
               </>
-            ) : modal === "style" && board ? (
+            ) : modal.startsWith("style") && board ? (
               <StyleForm
                 current={board.project.template}
+                focus={modal.split(":")[1] || board.project.template}
+                catalog={catalog}
+                applied={(board.project as any).visualStyle}
                 busy={busy}
                 onSubmit={(template) =>
                   act(async () => {
@@ -2369,10 +2388,15 @@ function ConnectionForm({
       {provider === "qwen-tts" && (
         <p className="muted">
           可执行文件填写 MLX 环境的 Python 绝对路径，模型填写 Qwen3-TTS
-          CustomVoice 的 MLX 模型 ID 或本地路径。可绑定语音模型，无需 API
-          Key。高级参数支持 voice（默认 Vivian）、language（默认
-          Chinese）、instructions（情绪、语速与语气，不要包含台词）、transcriptionConnectionId（独立转写连接
-          ID）。预设音色配音不等于声音克隆。首次生成需要加载模型。
+          CustomVoice 或 VoiceDesign 的 MLX 模型 ID 或本地路径。VoiceDesign
+          必须填写 instructions
+          人物声线描述，不使用固定音色；正式角色配音会使用角色设定。可绑定语音模型，无需
+          API Key。高级参数支持 voice（默认 Vivian）、language（默认
+          Chinese）、instructions（情绪、语速与语气，不要包含台词）。审核默认使用本地 Whisper，
+          Python 环境需安装 mlx-whisper；transcriptionExecutable 可指定独立 Python，
+          transcriptionModel 可指定转写模型（默认 mlx-community/whisper-large-v3-turbo）。
+          配置 transcriptionConnectionId 后优先使用该 API 转写连接。
+          预设音色配音不等于声音克隆。首次生成或转写需要加载模型。
         </p>
       )}
       {provider === "grok-build" && (
@@ -2393,39 +2417,6 @@ function ConnectionForm({
         保存连接 <ArrowRight size={15} />
       </button>
     </form>
-  );
-}
-function StyleForm({
-  current,
-  busy,
-  onSubmit,
-}: {
-  current: string;
-  busy: boolean;
-  onSubmit: (id: string) => void;
-}) {
-  return (
-    <>
-      <p className="eyebrow">VISUAL DIRECTION</p>
-      <h2>画风决定角色和场景怎么被画出来。</h2>
-      <p>
-        切换后会重做定妆及之后的画面，剧本和文字分镜保留。旧图作为历史版本保留。这是制作语言，不能复刻某部现有动画的角色或场景。
-      </p>
-      <div className="style-picker">
-        {templates.map((t) => (
-          <button
-            key={t.id}
-            className={"style-option" + (t.id === current ? " selected" : "")}
-            disabled={busy || t.id === current}
-            onClick={() => onSubmit(t.id)}
-          >
-            <strong>{t.name}</strong>
-            <small>{t.en}</small>
-            <p>{t.description}</p>
-          </button>
-        ))}
-      </div>
-    </>
   );
 }
 function BudgetForm({

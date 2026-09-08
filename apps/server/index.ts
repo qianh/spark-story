@@ -1,6 +1,13 @@
 import { isMediaStage } from "../../packages/series";
-import { resolve, join, sep } from "node:path";
-import { existsSync, mkdirSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { mkdirSync } from "node:fs";
+import {
+  closeViteHmr,
+  connectViteHmr,
+  forwardViteHmr,
+  liveViteOrigin,
+  serveFrontend,
+} from "./frontend";
 import { Store } from "./store";
 import { Runtime } from "./runtime";
 import { probe } from "./connectors";
@@ -73,12 +80,17 @@ const body = async (req: Request) => {
   return JSON.parse(text);
 };
 const revision = z.object({ revision: z.number().int().positive() });
-const server = Bun.serve({
+const server = Bun.serve<{
+  url: string;
+  vite: string;
+  backend?: WebSocket;
+  queue: (string | Buffer)[];
+}>({
   hostname: "127.0.0.1",
   port,
   idleTimeout: 60,
   maxRequestBodySize: 256 * 1024 * 1024,
-  async fetch(req) {
+  async fetch(req, server) {
     const url = new URL(req.url),
       path = url.pathname;
     const host = url.hostname;
@@ -98,11 +110,26 @@ const server = Bun.serve({
     if (req.headers.get("sec-fetch-site") === "cross-site")
       return json({ error: "不允许跨站请求" }, 403);
     if (
+      path.startsWith("/api/") &&
       ["POST", "PATCH", "PUT"].includes(req.method) &&
       !req.headers.get("content-type")?.startsWith("application/json") &&
       !path.endsWith("/upload")
     )
       return json({ error: "需要 JSON 请求" }, 415);
+    const vite = await liveViteOrigin();
+    if (
+      vite &&
+      !path.startsWith("/api/") &&
+      req.headers.get("upgrade")?.toLowerCase() === "websocket"
+    ) {
+      if (
+        server.upgrade(req, {
+          data: { url: path + url.search, vite, queue: [] },
+        })
+      )
+        return;
+      return new Response("WebSocket 升级失败", { status: 400 });
+    }
     try {
       if (path === "/api/bootstrap")
         return json({
@@ -111,6 +138,7 @@ const server = Bun.serve({
           ),
           connections: store.connections(),
           bindings: store.list("SELECT * FROM bindings"),
+          templates,
           version: "0.3.0",
           capabilities: { text: true, media: true },
         });
@@ -202,13 +230,17 @@ const server = Bun.serve({
       const retryVoices = path.match(/^\/api\/tasks\/([^/]+)\/retry-voices$/);
       if (retryVoices && req.method === "POST") {
         const value = revision
-          .extend({ character: z.string().min(1).max(200).optional() })
+          .extend({
+            character: z.string().min(1).max(200).optional(),
+            rewritePortrait: z.boolean().optional(),
+          })
           .parse(await body(req));
         return json(
           await runtime.retryVoices(
             retryVoices[1],
             value.revision,
             value.character,
+            value.rewritePortrait,
           ),
         );
       }
@@ -401,20 +433,7 @@ const server = Bun.serve({
         return json({ ok: true }, 202);
       }
       if (path.startsWith("/api/")) return json({ error: "接口不存在" }, 404);
-      const base = resolve("dist"),
-        file = resolve(base, "." + decodeURIComponent(path));
-      if (
-        file.startsWith(base + sep) &&
-        existsSync(file) &&
-        (await Bun.file(file).stat()).isFile()
-      )
-        return new Response(Bun.file(file));
-      if (existsSync(join(base, "index.html")))
-        return new Response(Bun.file(join(base, "index.html")));
-      return new Response(
-        "前端尚未构建。开发时使用 bun run dev，或先执行 bun run build。",
-        { status: 503 },
-      );
+      return serveFrontend(req, vite);
     } catch (e) {
       return json(
         {
@@ -434,6 +453,21 @@ const server = Bun.serve({
         400,
       );
     }
+  },
+  websocket: {
+    open(ws) {
+      if (!ws.data.vite) {
+        ws.close();
+        return;
+      }
+      connectViteHmr(ws);
+    },
+    message(ws, message) {
+      forwardViteHmr(ws, message);
+    },
+    close(ws) {
+      closeViteHmr(ws);
+    },
   },
 });
 console.log(`Spark Story: http://127.0.0.1:${server.port}`);

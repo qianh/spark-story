@@ -1,10 +1,15 @@
-const commands = [
-  ["bun", "--watch", "apps/server/index.ts"],
-  ["bun", "run", "dev:web"],
+const viteOrigin = `http://127.0.0.1:${process.env.SPARK_VITE_PORT || 5173}`;
+const children = [
+  Bun.spawn(["bun", "--watch", "apps/server/index.ts"], {
+    stdout: "inherit",
+    stderr: "inherit",
+    env: { ...process.env, SPARK_VITE_ORIGIN: viteOrigin },
+  }),
+  Bun.spawn(["bun", "run", "dev:web"], {
+    stdout: "inherit",
+    stderr: "inherit",
+  }),
 ];
-const children = commands.map((cmd) =>
-  Bun.spawn(cmd, { stdout: "inherit", stderr: "inherit" }),
-);
 let stopping = false;
 function stop() {
   if (stopping) return;

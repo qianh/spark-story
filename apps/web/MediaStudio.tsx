@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { MarkdownContent } from "./MarkdownContent";
 import {
   ArrowDownToLine,
@@ -6,6 +7,7 @@ import {
   ArrowDown,
   Film,
   Image,
+  Maximize2,
   Music,
   Play,
   Pause,
@@ -13,6 +15,7 @@ import {
   RefreshCw,
   Upload,
   Check,
+  X,
 } from "lucide-react";
 import {
   mediaBundle,
@@ -24,6 +27,14 @@ import {
 import type { Task } from "../../packages/domain";
 import type { ProductionRules } from "../../packages/production";
 const mediaUrl = (id: string) => "/api/media/files/" + id;
+function mediaDuration(file?: MediaFile) {
+  if (!file) return "";
+  try {
+    const n = Number(JSON.parse(file.metadata).duration);
+    if (Number.isFinite(n) && n > 0) return n.toFixed(1) + " 秒";
+  } catch {}
+  return "";
+}
 export function MediaGenerationProgress({
   progress,
 }: {
@@ -98,6 +109,60 @@ async function request(path: string, body: any) {
   if (!r.ok) throw Error(data.error);
   return data;
 }
+function MediaLightbox({
+  file,
+  onClose,
+}: {
+  file: MediaFile;
+  onClose: () => void;
+}) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = overflow;
+      document.removeEventListener("keydown", onKey);
+      prev?.focus?.();
+    };
+  }, [onClose]);
+  return createPortal(
+    <div
+      className="media-lightbox"
+      role="dialog"
+      aria-modal="true"
+      aria-label={file.name}
+      onClick={onClose}
+    >
+      <button
+        ref={closeRef}
+        type="button"
+        className="media-lightbox-close icon-button"
+        aria-label="关闭预览"
+        onClick={onClose}
+      >
+        <X size={18} />
+      </button>
+      <figure
+        className="media-lightbox-figure"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <img src={mediaUrl(file.id)} alt={file.name} />
+        <figcaption>
+          <span>{file.name}</span>
+          <a href={mediaUrl(file.id) + "?download=1"}>下载原图</a>
+        </figcaption>
+      </figure>
+    </div>,
+    document.body,
+  );
+}
 export function MediaPreview({
   id,
   files,
@@ -105,6 +170,8 @@ export function MediaPreview({
   id?: string;
   files: MediaFile[];
 }) {
+  const [open, setOpen] = useState(false);
+  const closePreview = useCallback(() => setOpen(false), []);
   const f = files.find((f) => f.id === id);
   if (!f)
     return (
@@ -116,13 +183,26 @@ export function MediaPreview({
   return (
     <div className={"media-preview " + f.kind}>
       {f.kind === "image" ? (
-        <img src={mediaUrl(f.id)} alt={f.name} loading="lazy" />
+        <button
+          type="button"
+          className="media-enlarge"
+          aria-label={"放大预览 " + f.name}
+          onClick={() => setOpen(true)}
+        >
+          <img src={mediaUrl(f.id)} alt={f.name} loading="lazy" />
+          <span className="media-enlarge-hint" aria-hidden="true">
+            <Maximize2 size={14} />
+          </span>
+        </button>
       ) : f.kind === "video" ? (
         <video controls preload="metadata" src={mediaUrl(f.id)} />
       ) : f.kind === "audio" ? (
         <div>
           <Music size={26} />
           <audio controls preload="metadata" src={mediaUrl(f.id)} />
+          {mediaDuration(f) && (
+            <span className="media-duration">{mediaDuration(f)}</span>
+          )}
         </div>
       ) : (
         <p>{f.name}</p>
@@ -134,6 +214,9 @@ export function MediaPreview({
       >
         <ArrowDownToLine size={15} />
       </a>
+      {open && f.kind === "image" && (
+        <MediaLightbox file={f} onClose={closePreview} />
+      )}
     </div>
   );
 }
@@ -439,7 +522,7 @@ export function BundleView({
   files: MediaFile[];
   onSave: (content: string) => void;
   onRetryAsset?: (assetId: string) => void;
-  onRetryVoices?: (character?: string) => void;
+  onRetryVoices?: (character?: string, rewritePortrait?: boolean) => void;
   busy: boolean;
   production?: ProductionRules;
 }) {
@@ -514,6 +597,8 @@ export function BundleView({
                         update((d) => {
                           d.assets[i].prompt = e.target.value;
                           delete d.assets[i].imageId;
+                          delete d.assets[i].generationPrompt;
+                          delete d.assets[i].generationStyleVersion;
                         })
                       }
                     />
@@ -522,6 +607,8 @@ export function BundleView({
                       (id) =>
                         update((d) => {
                           d.assets[i].imageId = id || undefined;
+                          delete d.assets[i].generationPrompt;
+                          delete d.assets[i].generationStyleVersion;
                         }),
                       "image",
                     )}
@@ -529,6 +616,7 @@ export function BundleView({
                 ) : (
                   <details className="asset-prompt">
                     <summary>查看提示词</summary>
+                    {asset.generationPrompt && <><strong>本图生成时的画风与要求</strong><p>{asset.generationPrompt}</p><strong>资产内容设定</strong></>}
                     <p>{asset.prompt}</p>
                   </details>
                 )}
@@ -554,19 +642,28 @@ export function BundleView({
                 editing ||
                 !data.assets.some((a: any) => a.kind === "character")
               }
-              onClick={() => onRetryVoices()}
+              onClick={() =>
+                onRetryVoices(
+                  undefined,
+                  data.voices.some(
+                    (v: any) => v.status === "ready" && !v.voicePortrait,
+                  ) || !data.voices.length,
+                )
+              }
             >
               <RefreshCw size={13} />
               {busy
                 ? "处理中…"
-                : data.voices.length
-                  ? "全部重新生成试听"
-                  : "生成全部角色试听"}
+                : data.voices.some(
+                      (v: any) => v.status === "ready" && !v.voicePortrait,
+                    ) || !data.voices.length
+                  ? "全部生成声音画像"
+                  : "全部再听一条"}
             </button>
           )}
           {!data.voices.length && (
             <p className="muted">
-              尚未生成声音试听。首次试听使用通用测试句；生成后可播放检查。
+              尚未生成声音试听。首次试听会按角色声音卡生成长句试听稿。
             </p>
           )}
           {onRetryVoices &&
@@ -586,9 +683,9 @@ export function BundleView({
                   <button
                     className="button secondary compact"
                     disabled={busy || editing}
-                    onClick={() => onRetryVoices(name)}
+                    onClick={() => onRetryVoices(name, true)}
                   >
-                    生成此角色试听
+                    生成声音画像
                   </button>
                 </div>
               ))}
@@ -597,21 +694,60 @@ export function BundleView({
               <div>
                 <strong>{voice.character}</strong>
                 <small>
-                  {voice.voice} · {voice.sampleText}
+                  {voice.status === "not_required"
+                    ? "本集无台词，无需说话试听"
+                    : voice.status === "needs_voice"
+                      ? "需要匹配声线"
+                      : voice.voice}
                 </small>
               </div>
-              <MediaPreview id={voice.audioId} files={files} />
-              {onRetryVoices && (
-                <button
-                  className="button secondary compact"
-                  disabled={busy || editing}
-                  onClick={() => onRetryVoices(voice.character)}
-                >
-                  <RefreshCw size={13} />
-                  重新生成此角色
-                </button>
+              {voice.instructions && (
+                <p className="muted">{voice.instructions}</p>
               )}
-              {editing && (
+              {voice.status === "ready" && voice.sampleText && (
+                <p className="voice-sample">{voice.sampleText}</p>
+              )}
+              {voice.castingNote && (
+                <p className="muted">{voice.castingNote}</p>
+              )}
+              {voice.status === "ready" && (
+                <MediaPreview id={voice.audioId} files={files} />
+              )}
+              {onRetryVoices &&
+                voice.status === "ready" &&
+                voice.voicePortrait && (
+                  <>
+                    <button
+                      className="button secondary compact"
+                      disabled={busy || editing}
+                      onClick={() => onRetryVoices(voice.character)}
+                    >
+                      <RefreshCw size={13} />
+                      再听一条
+                    </button>
+                    <button
+                      className="button secondary compact"
+                      disabled={busy || editing}
+                      onClick={() => onRetryVoices(voice.character, true)}
+                    >
+                      <RefreshCw size={13} />
+                      重新生成声音画像
+                    </button>
+                  </>
+                )}
+              {onRetryVoices &&
+                voice.status === "ready" &&
+                !voice.voicePortrait && (
+                  <button
+                    className="button secondary compact"
+                    disabled={busy || editing}
+                    onClick={() => onRetryVoices(voice.character, true)}
+                  >
+                    <RefreshCw size={13} />
+                    生成声音画像
+                  </button>
+                )}
+              {editing && voice.status === "ready" && (
                 <button
                   className="button secondary compact"
                   onClick={() =>
@@ -687,6 +823,7 @@ export function BundleView({
                               d.shots[i].prompt = e.target.value;
                               delete d.shots[i].imageId;
                               delete d.shots[i].videoId;
+                              delete d.shots[i].sourceAudioId;
                             })
                           }
                         />
@@ -700,6 +837,7 @@ export function BundleView({
                               d.shots[i].dialogue = e.target.value;
                               delete d.shots[i].audioId;
                               delete d.shots[i].videoId;
+                              delete d.shots[i].sourceAudioId;
                             })
                           }
                         />
@@ -710,6 +848,8 @@ export function BundleView({
                           ["sceneId", "场景 ID"],
                           ["imagePrompt", "静态画面提示词"],
                           ["motionPrompt", "视频动作提示词"],
+                          ["soundPrompt", "同步环境与动作音效（不需要填无）"],
+                          ["musicPrompt", "同步背景音乐（不需要填无）"],
                           ["camera", "景别、机位与视线"],
                           ["startState", "起始状态"],
                           ["endState", "结束状态"],
@@ -731,6 +871,7 @@ export function BundleView({
                                     delete d.shots[i].imageId;
                                   if (!["beatId", "sceneId"].includes(key))
                                     delete d.shots[i].videoId;
+                                  delete d.shots[i].sourceAudioId;
                                 })
                               }
                             />
@@ -744,6 +885,7 @@ export function BundleView({
                               update((d) => {
                                 d.shots[i].strategy = e.target.value;
                                 delete d.shots[i].videoId;
+                                delete d.shots[i].sourceAudioId;
                               })
                             }
                           >
@@ -828,6 +970,7 @@ export function BundleView({
                               update((d) => {
                                 d.shots[i].route = e.target.value;
                                 delete d.shots[i].videoId;
+                                delete d.shots[i].sourceAudioId;
                               })
                             }
                           >
@@ -845,6 +988,7 @@ export function BundleView({
                                 d.shots[i].voice = e.target.value;
                                 delete d.shots[i].audioId;
                                 delete d.shots[i].videoId;
+                                delete d.shots[i].sourceAudioId;
                               })
                             }
                           />
@@ -858,6 +1002,7 @@ export function BundleView({
                             update((d) => {
                               d.shots[i].imageId = id || undefined;
                               delete d.shots[i].videoId;
+                              delete d.shots[i].sourceAudioId;
                             }),
                           "image",
                         )}

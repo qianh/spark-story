@@ -166,13 +166,17 @@ export class MediaFiles {
     const f = this.get(id, projectId);
     return `data:${f.mime};base64,${(await readFile(f.path)).toString("base64")}`;
   }
-  async nativeAudio(fileId: string, signal: AbortSignal) {
+  async nativeAudio(
+    fileId: string,
+    signal: AbortSignal,
+    preserveQuality = false,
+  ) {
     const f = this.get(fileId);
     if (!JSON.parse(f.metadata).hasAudio)
       throw Error("原生音画视频没有音轨，请调整生成要求或改用独立配音");
     const dir = join(this.root, "frames", fileId);
     await mkdir(dir, { recursive: true });
-    const path = join(dir, "native.wav");
+    const path = join(dir, preserveQuality ? "source.wav" : "native.wav");
     await command(
       "ffmpeg",
       [
@@ -183,9 +187,9 @@ export class MediaFiles {
         f.path,
         "-vn",
         "-ac",
-        "1",
+        preserveQuality ? "2" : "1",
         "-ar",
-        "16000",
+        preserveQuality ? "48000" : "16000",
         path,
       ],
       signal,
@@ -194,7 +198,7 @@ export class MediaFiles {
       f.projectId,
       f.taskId,
       f.revision,
-      "原生对白审核.wav",
+      preserveQuality ? "视频同步音效与音乐.wav" : "原生对白审核.wav",
       await readFile(path),
       "audio/wav",
     );
@@ -302,6 +306,10 @@ export class MediaFiles {
       if (!preview && visual.kind !== "video")
         throw Error(`镜头 ${shot.title} 缺少正式视频，不能用静帧冒充视频成片`);
       const audio = shot.audioId ? this.get(shot.audioId, projectId) : null;
+      const sourceAudio =
+        !preview && audio && shot.sourceAudioId
+          ? this.get(shot.sourceAudioId, projectId)
+          : null;
       const vmeta = JSON.parse(visual.metadata),
         ameta = audio ? JSON.parse(audio.metadata) : null;
       const duration = shot.duration;
@@ -316,6 +324,8 @@ export class MediaFiles {
       if (audio) args.push("-i", audio.path);
       else if (!vmeta.hasAudio)
         args.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
+      if (sourceAudio)
+        args.push("-ss", String(shot.trimStart), "-i", sourceAudio.path);
       const hasAudio = !!audio || !vmeta.hasAudio,
         audioIndex = hasAudio ? 1 : 0;
       const scale = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=24`;
@@ -338,14 +348,17 @@ export class MediaFiles {
         const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg"><rect x="10" y="${height - boxH - 20}" width="${width - 20}" height="${boxH}" rx="8" fill="black" opacity="0.55"/>${text}</svg>`;
         await sharp(Buffer.from(svg)).png().toFile(subtitlePath);
         args.push("-i", subtitlePath);
-        const subtitleIndex = hasAudio ? 2 : 1;
+        const subtitleIndex = (hasAudio ? 2 : 1) + (sourceAudio ? 1 : 0);
         filter += `[base][${subtitleIndex}:v]overlay=0:0[v0];`;
       } else filter += "[base]null[v0];";
       filter +=
         shot.transition === "fade"
           ? `[v0]fade=t=in:d=0.2,fade=t=out:st=${Math.max(0, duration - 0.2)}:d=0.2[v];`
           : "[v0]null[v];";
-      filter += `[${audioIndex}:a]aresample=48000,apad,atrim=duration=${duration},volume=${shot.volume}[a]`;
+      if (sourceAudio) {
+        filter += `[1:a]aresample=48000,apad,atrim=duration=${duration},volume=${shot.volume}[voice];[2:a]aresample=48000,apad,atrim=duration=${duration},volume=${shot.sourceAudioVolume}[bed];[voice][bed]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[a]`;
+      } else
+        filter += `[${audioIndex}:a]aresample=48000,apad,atrim=duration=${duration},volume=${shot.volume}[a]`;
       const filename = `segment-${String(i).padStart(5, "0")}.mp4`;
       args.push(
         "-filter_complex",
@@ -541,9 +554,19 @@ export class MediaFiles {
           "error",
           "-i",
           file.path,
+          ...(JSON.parse(file.metadata).hasAudio
+            ? []
+            : ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]),
           "-t",
           String(clip.duration),
-          "-an",
+          "-map",
+          "0:v:0",
+          "-map",
+          JSON.parse(file.metadata).hasAudio ? "0:a:0" : "1:a:0",
+          "-af",
+          "aresample=48000,aformat=channel_layouts=stereo,apad",
+          "-c:a",
+          "aac",
           "-vf",
           "fps=24,setsar=1",
           "-c:v",

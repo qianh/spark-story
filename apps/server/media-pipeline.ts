@@ -1,3 +1,13 @@
+import { assetVisualPrompt } from "../../packages/visual-style";
+import {
+  castQwenVoices,
+  fillMissingVoiceCards,
+  textLen,
+} from "./voice-casting";
+import {
+  supportsVideoAudio,
+  videoAudioPrompt,
+} from "../../packages/video-audio";
 import { qwenVoices } from "./qwen-tts";
 import { mediaProfile } from "../../packages/media-profiles";
 import type { Runtime } from "./runtime";
@@ -9,7 +19,6 @@ import {
 } from "../../packages/production";
 import {
   reviewSchema,
-  templates,
   type Task,
   type Connection,
   type Artifact,
@@ -191,23 +200,26 @@ export class MediaPipeline {
     const asset = data.assets.find((a) => a.id === assetId);
     if (!asset) throw Error("资产不存在");
     const p = store.project(task.projectId);
-    const style = templates.find((t) => t.id === p.template)!;
+    const style = store.visualStyle(task.projectId);
     const library = store.assetLibrary(task.projectId);
     const base = asset.baseLibraryId
       ? library.find((a) => a.libraryId === asset.baseLibraryId)
       : undefined;
     this.assertCurrent(task, signal);
+    const generationPrompt = assetVisualPrompt(style, asset, data.assets);
     asset.imageId = await media.ensure(
       task.id,
       task.revision,
       "image",
-      `${style.prompt}。${asset.prompt}。固定身份：${asset.identity}。当前状态：${asset.state}`,
+      generationPrompt,
       base?.imageId ? [base.imageId] : [],
       { aspect: p.aspect },
       signal,
       undefined,
       true,
     );
+    asset.generationPrompt = generationPrompt;
+    asset.generationStyleVersion = style.version || style.id;
     delete asset.libraryId;
     const next = { type: "assets" as const, data };
     store.publish(task.id, task.revision, JSON.stringify(next, null, 2));
@@ -223,6 +235,7 @@ export class MediaPipeline {
     task: Task,
     character: string | undefined,
     signal: AbortSignal,
+    rewritePortrait = false,
   ) {
     if (task.stage !== 3) throw Error("仅定妆与资产阶段支持角色声音试听");
     if (["running", "reviewing", "coordinating"].includes(task.status))
@@ -252,7 +265,9 @@ export class MediaPipeline {
     const connection = media.connection("speech");
     let voices =
       connection.provider === "qwen-tts"
-        ? qwenVoices
+        ? connection.model.includes("VoiceDesign")
+          ? ["VoiceDesign"]
+          : qwenVoices
         : Array.isArray(connection.settings?.voices)
           ? connection.settings.voices.map(String)
           : [String(connection.settings?.voice || "alloy")];
@@ -263,16 +278,107 @@ export class MediaPipeline {
         [];
     }
     if (!voices.length) throw Error("语音连接没有可用音色");
+    let changed = false;
+    const completeCard = (sample: (typeof data.voices)[number]) =>
+      !!(
+        sample.status === "ready" &&
+        sample.voicePortrait &&
+        sample.sampleText &&
+        sample.instructions
+      );
+    if (connection.provider === "qwen-tts") {
+      const toWrite = targets.filter((name) => {
+        const sample = data.voices.find((v) => v.character === name);
+        if (sample?.status === "not_required") return false;
+        return rewritePortrait || !sample || !completeCard(sample);
+      });
+      if (toWrite.length) {
+        const shotPlan = store
+          .upstream(task)
+          .map((a) => mediaBundle(a.content))
+          .find((b) => b?.type === "shot-plan");
+        if (!shotPlan) throw Error("缺少已确认文字分镜，不能编造角色试听台词");
+        const shots = storyboardSchema.parse(shotPlan.data).shots;
+        const design = connection.model.includes("VoiceDesign");
+        if (rewritePortrait)
+          data.voices = data.voices.filter(
+            (v) => !toWrite.includes(v.character),
+          );
+        const bound = rewritePortrait
+          ? []
+          : store.approvedVoices(task.projectId, connection.id);
+        const borrow = rewritePortrait
+          ? []
+          : store
+              .allApprovedVoices(task.projectId)
+              .filter(
+                (v) =>
+                  !bound.some(
+                    (s) =>
+                      s.character === v.character && s.audioId === v.audioId,
+                  ),
+              );
+        const filled = await fillMissingVoiceCards(
+          castQwenVoices(data, shots, toWrite, design, bound, borrow),
+          data.assets,
+          shots,
+          storyBible(store.upstream(task)),
+          async (prompt) =>
+            parseResult(
+              await this.runtime.call(
+                task,
+                crypto.randomUUID(),
+                store.binding("文本模型"),
+                prompt,
+                signal,
+              ),
+            ),
+        );
+        data.voices = [
+          ...data.voices.filter((v) => !toWrite.includes(v.character)),
+          ...filled,
+        ];
+      }
+      if (!rewritePortrait)
+        data.voices = data.voices.map((sample) => {
+          if (!targets.includes(sample.character) || !completeCard(sample))
+            return sample;
+          const { audioId: _dropped, ...kept } = sample;
+          return kept;
+        });
+    }
     for (const name of targets) {
-      if (!data.voices.some((v) => v.character === name))
+      if (!data.voices.some((v) => v.character === name)) {
+        if (connection.provider === "qwen-tts")
+          throw Error(`角色 ${name} 没有可生成的声音画像`);
         data.voices.push({
           character: name,
           voice: voices[0],
-          sampleText: `你好，我是${name}。我们准备出发吧。`,
+          sampleText: (() => {
+            const plan = store
+              .upstream(task)
+              .map((a) => mediaBundle(a.content))
+              .find((b) => b?.type === "shot-plan");
+            const line =
+              plan &&
+              storyboardSchema
+                .parse(plan.data)
+                .shots.find((s) => s.speaker === name && s.dialogue.trim())
+                ?.dialogue;
+            if (!line)
+              throw Error(`角色 ${name} 没有已确认台词，不能编造试听内容`);
+            return line;
+          })(),
+          instructions: "",
+          castingNote: "",
+          status: "ready",
+          voiceIdentityKey: "",
         });
+      }
     }
-    const selected = data.voices.filter((v) => targets.includes(v.character));
-    let changed = false;
+    const selected = data.voices.filter(
+      (v) => targets.includes(v.character) && v.status === "ready",
+    );
     this.assertCurrent(task, signal);
     store.updateTask(task.id, task.revision, "running", "正在生成角色声音试听");
     try {
@@ -280,6 +386,13 @@ export class MediaPipeline {
         const chosenVoice = voices.includes(sample.voice)
           ? sample.voice
           : voices[0];
+        if (
+          connection.provider === "qwen-tts" &&
+          (!sample.voicePortrait || textLen(sample.sampleText) < 80)
+        )
+          throw Error(
+            `${sample.character} 还没有声音卡或长句试听稿，不能用短台词试听`,
+          );
         this.assertCurrent(task, signal);
         store.event(
           task.projectId,
@@ -293,7 +406,7 @@ export class MediaPipeline {
           "speech",
           sample.sampleText,
           [],
-          { voice: chosenVoice },
+          { voice: chosenVoice, instructions: sample.instructions },
           signal,
           undefined,
           true,
@@ -325,7 +438,7 @@ export class MediaPipeline {
         task.projectId,
         task.id,
         "media.voice",
-        `已完成 ${selected.length} 个声音试听，定妆图保持不变`,
+        `已完成 ${selected.length} 个声音试听；无台词角色不配音，不匹配的声线等待处理。定妆图保持不变`,
       );
       return { type: "assets", data };
     } catch (error) {
@@ -358,7 +471,7 @@ export class MediaPipeline {
   ) {
     const { store, media } = this.runtime,
       p = store.project(task.projectId),
-      style = templates.find((t) => t.id === p.template)!;
+      style = store.visualStyle(task.projectId);
     const rules = store.productionRules(p.id);
     const episode = upstream
       .map((a) =>
@@ -367,7 +480,7 @@ export class MediaPipeline {
           : undefined,
       )
       .find(Boolean);
-    const context = `画幅 ${p.aspect}，风格 ${style.prompt}。每集最终时长 ${rules.minSeconds}～${rules.maxSeconds} 秒；具体镜头以本集已确认剧本和文字分镜为准，不强制场景数量、反应比例或叙事模板。\n资产必须分开记录 identity（不变外貌）与 state（服装、年龄、伤势、能力阶段）。分镜必须额外提供 beatId（剧本时间清单中的节拍 ID）、sceneId、imagePrompt（静态构图，不含连续动作）、motionPrompt（单一明确动作、运动方向与结果）、camera（景别、机位、轴线、视线）、startState、endState。prompt 保留镜头摘要。每镜头有叙事用途，所有镜头按节拍连续排列，同一节拍镜头时长之和严格等于节拍时长。动作需分清原因、执行和反应；保持跨镜头人物位置、视线、服饰伤势一致。strategy 仅支持 single（单段）或 tail-chain（超过供应商时限时以前段实际末帧接续），不要虚构其他供应商能力。用户要求：${feedback}。已确认上游：${JSON.stringify(upstream.map((a) => a.content))}`;
+    const context = `画幅 ${p.aspect}，风格 ${style.prompt}。每集最终时长 ${rules.minSeconds}～${rules.maxSeconds} 秒；具体镜头以本集已确认剧本和文字分镜为准，不强制场景数量、反应比例或叙事模板。\n资产必须分开记录 identity（不变外貌）与 state（服装、年龄、伤势、能力阶段）。分镜必须额外提供 beatId（剧本时间清单中的节拍 ID）、sceneId、imagePrompt（静态构图，不含连续动作）、motionPrompt（单一明确动作、运动方向与结果）、soundPrompt（环境和动作音效，明确时间点，无需则写无）、musicPrompt（是否需要配乐及其情绪、乐器与音量，无需则写无）、camera（景别、机位、轴线、视线）、startState、endState。prompt 保留镜头摘要。每镜头有叙事用途，所有镜头按节拍连续排列，同一节拍镜头时长之和严格等于节拍时长。动作需分清原因、执行和反应；保持跨镜头人物位置、视线、服饰伤势一致。strategy 仅支持 single（单段）或 tail-chain（超过供应商时限时以前段实际末帧接续），不要虚构其他供应商能力。用户要求：${feedback}。已确认上游：${JSON.stringify(upstream.map((a) => a.content))}`;
     const checkShots = (shots: Storyboard["shots"]) => {
       const issues = validateShotTiming(shots, rules, episode);
       if (issues.length) throw Error(`制作验收不通过：${issues.join("；")}`);
@@ -411,7 +524,7 @@ export class MediaPipeline {
         edited?.type === "assets"
           ? edited.data
           : await ask(
-              `你是角色与资产 Agent。提取本集实际需要的角色、场景、道具，生成定妆提示词；角色图是单角色，不把多人拼在同一图。画风必须遵守：${style.prompt}。prompt 里写身份、服饰、姿态和场景，不要改写成二维插画、水墨、赛璐璐或Q版，也不要写成任何现有动画角色的翻版。本次只规划图像资产，voices 返回空数组；声音试听会在图像完成后独立规划。返回 JSON：{"summary":"说明","assets":[{"id":"稳定ID","name":"名字","kind":"character或scene或prop","prompt":"完整图像生成要求"}],"voices":[{"character":"角色名字","voice":"可用ID","sampleText":"该角色一句适合试听的台词"}]}。从文字分镜 assetIds 提取全部需求并保持 ID 一致。已有资产可通过 libraryId 引用，必须选择外观与状态都匹配的版本；新增状态创建独立资产，并用 baseLibraryId 指定基础参考版本，不覆盖旧版。每项填写 identity 与 state。不要虚构 imageId、audioId。可复用库：${JSON.stringify(library)}。`,
+              `你是角色与资产 Agent。提取本集实际需要的角色、场景、道具，生成定妆提示词；角色图是单角色，不把多人拼在同一图。画风必须遵守：${style.prompt}。每项填写 promptFormat="visual-description-v1"。prompt 是一段可直接用于生图的完整中文画面描述，合并该资产全部可见身份、服饰、状态、姿态和场景信息，各写一次，约150～300字；identity 与 state 用于资产库记录，不会再次拼入生图输入，所以其中影响外观的信息必须完整体现在 prompt。用正向描述表达表情和气质，不堆叠同义禁令。不要写通用画风词、渲染词或中英双语翻译，程序会原样添加作品画风。美术表现严格使用当前画风，不重复加入真人写真或过时的写实渲染要求，不要改写成二维插画、水墨、赛璐璐或Q版，也不要写成任何现有动画角色的翻版。角色定妆只画身体、脸、头发和身上的衣服。已经单独列为 prop 的物件不要画进角色图：有佩剑资产则角色定妆无剑、不握剑、腰侧不挂剑。道具图是该物件的唯一外观来源，不要为了好看把道具画进角色定妆。本次只规划图像资产，voices 返回空数组；声音试听会在图像完成后独立规划。返回 JSON：{"summary":"说明","assets":[{"id":"稳定ID","name":"名字","kind":"character或scene或prop","promptFormat":"visual-description-v1","prompt":"完整中文画面描述","identity":"不变外貌","state":"当前外观状态"}],"voices":[{"character":"角色名字","voice":"可用ID","sampleText":"该角色一句适合试听的台词"}]}。从文字分镜 assetIds 提取全部需求并保持 ID 一致。已有资产可通过 libraryId 引用，必须选择外观与状态都匹配的版本；新增状态创建独立资产，并用 baseLibraryId 指定基础参考版本，不覆盖旧版。每项填写 identity 与 state。不要虚构 imageId、audioId。可复用库：${JSON.stringify(library)}。`,
             ),
       );
       const shotPlan = bundleAt("shot-plan");
@@ -437,16 +550,20 @@ export class MediaPipeline {
           asset.imageId = saved.imageId;
         }
         this.assertCurrent(task, signal);
-        if (!asset.imageId)
+        if (!asset.imageId) {
+          const generationPrompt = assetVisualPrompt(style, asset, data.assets);
           asset.imageId = await media.ensure(
             task.id,
             task.revision,
             "image",
-            `${style.prompt}。${asset.prompt}。固定身份：${asset.identity}。当前状态：${asset.state}`,
+            generationPrompt,
             base?.imageId ? [base.imageId] : [],
             { aspect: p.aspect },
             signal,
           );
+          asset.generationPrompt = generationPrompt;
+          asset.generationStyleVersion = style.version || style.id;
+        }
         saveProgress("assets", data);
       }
       if (
@@ -464,7 +581,9 @@ export class MediaPipeline {
       }
       let voices =
         voice.provider === "qwen-tts"
-          ? qwenVoices
+          ? voice.model.includes("VoiceDesign")
+            ? ["VoiceDesign"]
+            : qwenVoices
           : Array.isArray(voice.settings?.voices)
             ? (voice.settings!.voices as string[])
             : [String(voice.settings?.voice || "alloy"), "nova", "onyx"];
@@ -476,7 +595,15 @@ export class MediaPipeline {
         if (!voices.length) throw Error("语音供应商未返回可用声音");
       }
       const approvedVoices = store.approvedVoices(task.projectId, voice.id);
-      if (!data.voices.length) {
+      const borrowedVoices = store
+        .allApprovedVoices(task.projectId)
+        .filter(
+          (v) =>
+            !approvedVoices.some(
+              (s) => s.character === v.character && s.audioId === v.audioId,
+            ),
+        );
+      if (!data.voices.length && voice.provider !== "qwen-tts") {
         const plan = await ask(
           `你是配音 Agent。为以下角色各提供 2 个不同声音的试听候选（不足则 1 个），仅从可用 voice ID ${JSON.stringify(voices.slice(0, 30))} 中选择。返回 JSON {"voices":[{"character":"角色名字","voice":"可用ID","sampleText":"该角色一句适合试听的台词"}]}。角色：${JSON.stringify(data.assets.filter((asset) => asset.kind === "character"))}`,
         );
@@ -495,7 +622,32 @@ export class MediaPipeline {
         Object.assign(sample, saved);
         return true;
       });
+      if (voice.provider === "qwen-tts") {
+        const plan = storyboardSchema.parse(bundleAt("shot-plan"));
+        const design = voice.model.includes("VoiceDesign");
+        data.voices = await fillMissingVoiceCards(
+          castQwenVoices(
+            data,
+            plan.shots,
+            undefined,
+            design,
+            approvedVoices,
+            borrowedVoices,
+          ),
+          data.assets,
+          plan.shots,
+          storyBible(upstream),
+          ask,
+        );
+        saveProgress("assets", data);
+        const missing = data.voices.filter((v) => v.status === "needs_voice");
+        if (missing.length)
+          throw Error(
+            `制作验收：角色声音待选型：${missing.map((v) => v.character + "：" + v.castingNote).join("；")}`,
+          );
+      }
       for (const sample of data.voices) {
+        if (sample.status === "not_required") continue;
         this.assertCurrent(task, signal);
         if (!voices.includes(sample.voice))
           throw Error(`声音 ${sample.voice} 不在供应商可用列表中`);
@@ -506,7 +658,7 @@ export class MediaPipeline {
             "speech",
             sample.sampleText,
             [],
-            { voice: sample.voice },
+            { voice: sample.voice, instructions: sample.instructions },
             signal,
           );
         saveProgress("assets", data);
@@ -514,6 +666,21 @@ export class MediaPipeline {
       return { type: "assets", data };
     }
     const assets = assetPlanSchema.parse(bundleAt("assets"));
+    const speechOptions = (shot: Storyboard["shots"][number]) => {
+      const selected = assets.voices.find(
+        (v) => v.character === shot.speaker && v.status === "ready",
+      );
+      if (media.connection("speech").provider === "qwen-tts" && !selected)
+        throw Error(`制作验收：${shot.speaker} 缺少已选定的合适声线`);
+      if (
+        media.connection("speech").provider === "qwen-tts" &&
+        selected?.sampleText &&
+        shot.dialogue.trim() === selected.sampleText.trim()
+      )
+        throw Error(`镜头 ${shot.id} 不能使用试听稿作为台词`);
+      shot.voice = selected?.voice || shot.voice || "alloy";
+      return { voice: shot.voice, instructions: selected?.instructions || "" };
+    };
     if (task.stage === 4) {
       media.connection("image");
       media.connection("speech");
@@ -532,6 +699,7 @@ export class MediaPipeline {
           delete shot.imageId;
           delete shot.audioId;
           delete shot.videoId;
+          delete shot.sourceAudioId;
           shot.draftImage = false;
         }
       }
@@ -568,7 +736,7 @@ export class MediaPipeline {
             "speech",
             shot.dialogue,
             [],
-            { voice: shot.voice },
+            speechOptions(shot),
             signal,
           );
         }
@@ -600,6 +768,7 @@ export class MediaPipeline {
         if (shot.draftImage) {
           delete shot.imageId;
           delete shot.videoId;
+          delete shot.sourceAudioId;
           shot.draftImage = false;
         }
         let imageFeedback = feedback;
@@ -660,7 +829,7 @@ export class MediaPipeline {
             "speech",
             shot.dialogue,
             [],
-            { voice: shot.voice || "alloy" },
+            speechOptions(shot),
             signal,
           );
         }
@@ -685,7 +854,7 @@ export class MediaPipeline {
                 "speech",
                 shot.dialogue,
                 [],
-                { voice: shot.voice || "alloy" },
+                speechOptions(shot),
                 signal,
               );
           }
@@ -696,7 +865,15 @@ export class MediaPipeline {
             "长镜头已切换为完整配音与分段视频，保持台词连续。",
           );
         }
-        const prompt = `${style.prompt}。${shot.motionPrompt || shot.prompt}。${shot.camera}。起始状态：${shot.startState}；结束状态：${shot.endState}。${shot.route === "native" ? `角色 ${shot.speaker} 用 ${shot.voice} 声音准确说出：${shot.dialogue}` : "保持画面连续，禁止字幕和无关文字。"} ${feedback}`;
+        const withAudio = supportsVideoAudio(video);
+        if (!withAudio)
+          store.event(
+            p.id,
+            task.id,
+            "media.audio",
+            "当前视频连接未声明同步音频能力，本段仍需后期补音效与音乐",
+          );
+        const prompt = `${style.prompt}。${shot.motionPrompt || shot.prompt}。${shot.camera}。起始状态：${shot.startState}；结束状态：${shot.endState}。${shot.route === "native" ? `角色 ${shot.speaker} 用 ${shot.voice} 声音准确说出：${shot.dialogue}` : "保持画面连续，禁止字幕和无关文字。"} ${withAudio ? videoAudioPrompt(shot) : ""} ${feedback}`;
         if (shot.duration > max && shot.route !== "native") {
           if (shot.strategy === "single")
             throw Error(
@@ -714,7 +891,11 @@ export class MediaPipeline {
               "video",
               `${prompt}。这是连续镜头的第 ${n + 1}/${count} 段，保持相同人物、场景和运动方向，不要重复开场动作。`,
               [reference],
-              { aspect: p.aspect, duration },
+              {
+                aspect: p.aspect,
+                duration,
+                ...(withAudio ? { generateAudio: true } : {}),
+              },
               signal,
             );
             clips.push({ id, duration });
@@ -736,9 +917,26 @@ export class MediaPipeline {
             "video",
             prompt,
             [shot.imageId!],
-            { aspect: p.aspect, duration: shot.duration },
+            {
+              aspect: p.aspect,
+              duration: shot.duration,
+              ...(withAudio ? { generateAudio: true } : {}),
+            },
             signal,
           );
+        if (withAudio && shot.route !== "native") {
+          if (JSON.parse(media.files.get(shot.videoId!).metadata).hasAudio)
+            shot.sourceAudioId = (
+              await media.files.nativeAudio(shot.videoId!, signal, true)
+            ).id;
+          else
+            store.event(
+              p.id,
+              task.id,
+              "media.audio",
+              `镜头 ${shot.title} 请求了同步声音，但视频没有音轨，需要后期补音`,
+            );
+        }
         if (shot.route === "lipsync" && shot.audioId)
           shot.videoId = await media.ensure(
             task.id,
@@ -746,7 +944,7 @@ export class MediaPipeline {
             "lipsync",
             shot.dialogue,
             [shot.videoId, shot.audioId],
-            { voice: shot.voice },
+            speechOptions(shot),
             signal,
           );
         if (shot.route === "native") shot.audioId = undefined;
@@ -761,7 +959,7 @@ export class MediaPipeline {
         : {
             ...production,
             ...((await ask(
-              `你是后期音乐音效 Agent。根据本集内容给出纯音乐与适量氛围音效生成要求。只返回 JSON {"summary":"剪辑说明","musicPrompt":"配乐提示词","soundPrompt":"背景氛围音效提示词","musicVolume":0.18,"soundVolume":0.25,"subtitles":true,"subtitleSize":32}。不要重写镜头数据。`,
+              `你是后期音乐音效 Agent。根据本集内容给出纯音乐与适量氛围音效生成要求。已有 sourceAudioId 的镜头已带同步音效或音乐，不要重复叠加；全片镜头均带同步声音时，默认 musicPrompt 与 soundPrompt 返回空字符串，仅在用户明确要求补充时提供。只返回 JSON {"summary":"剪辑说明","musicPrompt":"配乐提示词","soundPrompt":"背景氛围音效提示词","musicVolume":0.18,"soundVolume":0.25,"subtitles":true,"subtitleSize":32}。不要重写镜头数据。`,
             )) as Record<string, unknown>),
           },
     );
@@ -818,6 +1016,16 @@ export class MediaPipeline {
     Object.assign(data, exported);
     return { type: "timeline", data };
   }
+}
+function storyBible(artifacts: Artifact[]) {
+  for (const artifact of artifacts) {
+    try {
+      const value = JSON.parse(artifact.content);
+      if (value?.type === "story" && typeof value.bible === "string")
+        return value.bible;
+    } catch {}
+  }
+  return "";
 }
 function collectFileIds(data: any): string[] {
   const ids = new Set<string>();

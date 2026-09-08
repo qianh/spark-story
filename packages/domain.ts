@@ -1,3 +1,4 @@
+import { donghuaStylePrompt, donghuaStyleVersion } from "./visual-style";
 import { z } from "zod";
 import { productionRulesSchema } from "./production";
 export const stages = [
@@ -74,11 +75,22 @@ export const templates = [
     en: "XIANXIA DONGHUA",
     color: "#7b9aa8",
     description:
-      "接近《仙逆》这类三维仙侠国漫的制作语言：写实结构、仙侠服饰与克制光雾，不是某部作品的角色复刻",
-    prompt:
-      "三维仙侠国漫，影视级UE写实渲染，真实头骨五官与适度美型，皮肤次表面散射，发丝分缕，衣料绣纹甲片有重量和褶皱。冷青灰主调，湿气与体积雾，克制发光。禁止二次元平涂插画、赛璐璐色块、水墨留白、Q版比例、网红磨皮塑料脸、过曝炫光、英文水印和现代都市。单人定妆，完整可见，不拼多人。这是制作语言，不要画成任何现有动画的角色或场景翻版。",
+      "《仙逆》式 3D CGI 国漫：精致立体造型、超写实皮肤、精细衣料与电影级光影",
+    prompt: donghuaStylePrompt,
   },
 ];
+export function catalogVisualStyle(id: string) {
+  const t = templates.find((x) => x.id === id);
+  if (!t) throw Error("未知视觉模板");
+  return {
+    id: t.id,
+    name: t.name,
+    en: t.en,
+    description: t.description,
+    prompt: t.prompt,
+    version: t.id === "donghua3d" ? donghuaStyleVersion : t.id,
+  };
+}
 export const projectInput = z.object({
   name: z.string().trim().min(1).max(80),
   source: z.string().trim().min(1).max(120000),
@@ -135,11 +147,12 @@ export const connectionInput = z
       });
     if (
       v.provider === "qwen-tts" &&
-      (v.transport !== "cli" || !v.model.includes("CustomVoice"))
+      (v.transport !== "cli" || !/(CustomVoice|VoiceDesign)/.test(v.model))
     )
       c.addIssue({
         code: "custom",
-        message: "Qwen 本地配音需要 CLI 和 CustomVoice 模型 ID 或路径",
+        message:
+          "Qwen 本地配音需要 CLI 和 CustomVoice/VoiceDesign 模型 ID 或路径",
       });
     if (v.transport === "api") {
       try {

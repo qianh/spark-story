@@ -46,10 +46,16 @@ test("制作规则可编辑、非法区间被拒绝、保存后重置规划但�
   );
   await page.goto("/");
   await page.getByRole("button", { name: /画风 ·/ }).click();
-  await expect(
-    page.getByRole("heading", { name: "画风决定角色和场景怎么被画出来。" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "热血赛璐璐" })).toBeVisible();
+  await expect(page.getByText("生成时使用的画风说明")).toBeVisible();
+  await expect(page.getByText("赛璐璐动漫，清晰轮廓")).toBeVisible();
+  await page.getByRole("button", { name: "更换其他画风" }).click();
   await page.getByRole("button", { name: /三维仙侠国漫/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "三维仙侠国漫" }),
+  ).toBeVisible();
+  await expect(page.getByText("高细节3D CGI仙侠")).toBeVisible();
+  await page.getByRole("button", { name: "应用到当前作品" }).click();
   await expect(
     page.getByRole("button", { name: /画风 · 三维仙侠国漫/ }),
   ).toBeVisible();

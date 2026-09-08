@@ -28,7 +28,7 @@ import {
 } from "../../packages/production";
 import {
   stages,
-  templates,
+  catalogVisualStyle,
   type Project,
   type Task,
   type Connection,
@@ -106,6 +106,7 @@ export class Store {
         p.id,
         JSON.stringify({
           production: productionRulesSchema.parse(input.production || {}),
+          visual: catalogVisualStyle(p.template),
         }),
       ]);
       this.event(
@@ -121,6 +122,25 @@ export class Store {
     const p = this.one<Project>("SELECT * FROM projects WHERE id=?", id);
     if (!p) throw Error("项目不存在");
     return p;
+  }
+  settings(projectId: string): Record<string, any> {
+    const row = this.one<{ data: string }>(
+      "SELECT data FROM project_settings WHERE projectId=?",
+      projectId,
+    );
+    return row ? JSON.parse(row.data) : {};
+  }
+  visualStyle(projectId: string) {
+    const saved = this.settings(projectId).visual;
+    if (saved?.id && typeof saved.prompt === "string" && saved.prompt)
+      return saved;
+    return catalogVisualStyle(this.project(projectId).template);
+  }
+  patchSettings(projectId: string, patch: Record<string, unknown>) {
+    this.db.run(
+      "INSERT INTO project_settings VALUES(?,?) ON CONFLICT(projectId) DO UPDATE SET data=excluded.data",
+      [projectId, JSON.stringify({ ...this.settings(projectId), ...patch })],
+    );
   }
   productionRules(projectId: string): ProductionRules {
     this.project(projectId);
@@ -184,11 +204,16 @@ export class Store {
     })();
   }
   setVisualTemplate(projectId: string, templateId: string) {
-    const style = templates.find((t) => t.id === templateId);
-    if (!style) throw Error("未知视觉模板");
+    const style = catalogVisualStyle(templateId);
     this.project(projectId);
     return this.db.transaction(() => {
-      if (this.project(projectId).template === templateId) return style;
+      const prev = this.visualStyle(projectId);
+      const sameId = prev.id === style.id;
+      const samePrompt = prev.prompt === style.prompt;
+      if (sameId && samePrompt) {
+        this.patchSettings(projectId, { visual: style });
+        return style;
+      }
       if (
         this.one(
           "SELECT id FROM tasks WHERE projectId=? AND status IN ('running','reviewing','coordinating')",
@@ -207,6 +232,7 @@ export class Store {
         templateId,
         projectId,
       ]);
+      this.patchSettings(projectId, { visual: style });
       for (const t of this.tasks(projectId).filter((t) =>
         isMediaStage(t.stage),
       )) {
@@ -219,12 +245,20 @@ export class Store {
           this.canRun(current) ? "ready" : "blocked",
           t.id,
         ]);
+        const checkpoint = this.one<Artifact>(
+          "SELECT * FROM artifacts WHERE taskId=? ORDER BY createdAt DESC LIMIT 1",
+          t.id,
+        );
+        if (checkpoint)
+          this.publish(current.id, current.revision, checkpoint.content);
       }
       this.event(
         projectId,
         "",
         "visual.template",
-        `画风已改为「${style.name}」。已有定妆图保留为旧版本；重新执行定妆后按新画风生成，不复刻任何现有动画角色。`,
+        sameId
+          ? `已按当前模板刷新「${style.name}」的生成说明。已有定妆图保留为旧版本；重新执行定妆后按这份说明生成。`
+          : `画风已改为「${style.name}」。已有定妆图保留为旧版本；重新执行定妆后按新画风生成，不复刻任何现有动画角色。`,
       );
       return style;
     })();
@@ -672,6 +706,12 @@ export class Store {
       connectionId,
     ).map((r) => JSON.parse(r.data));
   }
+  allApprovedVoices(projectId: string) {
+    return this.list<{ data: string }>(
+      "SELECT data FROM voice_library WHERE projectId=?",
+      projectId,
+    ).map((r) => JSON.parse(r.data));
+  }
   registerAssets(task: Task, content: string) {
     const bundle = mediaBundle(content);
     const parsed = assetPlanSchema.parse(bundle?.data);
@@ -682,6 +722,7 @@ export class Store {
     const seen = new Set<string>();
     if (binding)
       for (const voice of parsed.voices) {
+        if (voice.status !== "ready" || !voice.audioId) continue;
         if (seen.has(voice.character)) continue;
         seen.add(voice.character);
         this.db.run(
@@ -794,7 +835,10 @@ export class Store {
       projectId,
     );
     return {
-      project: this.project(projectId),
+      project: {
+        ...this.project(projectId),
+        visualStyle: this.visualStyle(projectId),
+      },
       production: this.productionRules(projectId),
       planningCheckpoints: this.list(
         "SELECT p.* FROM planning_checkpoints p JOIN tasks t ON t.id=p.taskId WHERE t.projectId=? ORDER BY p.createdAt DESC",

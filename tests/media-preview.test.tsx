@@ -6,7 +6,11 @@ import {
   plannedMediaItems,
   type MediaJob,
 } from "../packages/media";
-import { BundleView, MediaGenerationProgress } from "../apps/web/MediaStudio";
+import {
+  BundleView,
+  MediaGenerationProgress,
+  MediaPreview,
+} from "../apps/web/MediaStudio";
 
 const jobs = (rows: Partial<MediaJob>[]): MediaJob[] =>
   rows.map((j, i) => ({
@@ -242,4 +246,137 @@ test("定妆提示词默认收起，需点开查看", () => {
   expect(html).toContain("<details");
   expect(html).toContain("<summary>查看提示词</summary>");
   expect(html).toContain(prompt);
+});
+
+test("声音试听展示声音卡、试听稿、文件时长和再听一条", () => {
+  const html = renderToStaticMarkup(
+    <BundleView
+      content={JSON.stringify({
+        type: "assets",
+        data: {
+          summary: "定妆",
+          assets: [
+            {
+              id: "hero",
+              name: "沈不言",
+              kind: "character",
+              prompt: "定妆",
+            },
+          ],
+          voices: [
+            {
+              character: "沈不言",
+              voice: "VoiceDesign",
+              sampleText:
+                "我只问她还活着没有。先把人带离石阶，再谈其余。剑还在腰侧，这一夜不许任何人靠近。青梧的规矩不是拿来吓孩子的，是拿来护人的。山门空着，谁来都要先过我这一关，没有例外。",
+              instructions:
+                "青年男性，中低音，音色清冷、偏薄、不浑厚。语速偏慢，吐字清楚。标准普通话，无方言。情绪底色克制、冷、不煽情。不要广告腔、卖萌、朗诵、读画面。",
+              castingNote:
+                "沿用已确认声线。再生成是同一方向的抽样，不能当声音克隆。",
+              status: "ready",
+              audioId: "aud-1",
+              voicePortrait: {
+                gender: "male",
+                ageBand: "youth",
+                pitch: "mid-low",
+                timbre: "清冷、偏薄、不浑厚",
+                pace: "slightly-slow",
+                accent: "标准普通话，无方言",
+                baselineEmotion: "克制、冷、不煽情",
+                avoid: ["广告腔", "卖萌", "朗诵", "读画面"],
+              },
+            },
+          ],
+        },
+      })}
+      files={[
+        {
+          id: "aud-1",
+          projectId: "p",
+          taskId: "t",
+          revision: 1,
+          kind: "audio",
+          name: "试听.wav",
+          path: "a.wav",
+          mime: "audio/wav",
+          metadata: JSON.stringify({ duration: 8.24, hasAudio: true }),
+          createdAt: "",
+        },
+      ]}
+      busy={false}
+      onSave={() => {}}
+      onRetryVoices={() => {}}
+    />,
+  );
+  expect(html).toContain("青年男性，中低音");
+  expect(html).toContain("山门空着");
+  expect(html).toContain("沿用已确认声线");
+  expect(html).toContain("8.2 秒");
+  expect(html).toContain("再听一条");
+  expect(html).toContain("重新生成声音画像");
+  expect(html).not.toContain("重新生成此角色");
+});
+
+test("图片缩略图可放大预览，下载仍可用", () => {
+  const html = renderToStaticMarkup(
+    <MediaPreview
+      id="img-1"
+      files={[
+        {
+          id: "img-1",
+          projectId: "p",
+          taskId: "t",
+          revision: 1,
+          kind: "image",
+          name: "沈不言.png",
+          path: "img-1.png",
+          mime: "image/png",
+          metadata: "{}",
+          createdAt: "",
+        },
+      ]}
+    />,
+  );
+  expect(html).toContain("放大预览 沈不言.png");
+  expect(html).toContain("下载 沈不言.png");
+  expect(html).toContain('alt="沈不言.png"');
+});
+
+test("旧试听没有声音卡时，声音区可单独生成画像，不重做定妆图", () => {
+  const html = renderToStaticMarkup(
+    <BundleView
+      content={JSON.stringify({
+        type: "assets",
+        data: {
+          summary: "定妆",
+          assets: [
+            {
+              id: "hero",
+              name: "沈不言",
+              kind: "character",
+              prompt: "定妆",
+              imageId: "img-1",
+            },
+          ],
+          voices: [
+            {
+              character: "沈不言",
+              voice: "VoiceDesign",
+              sampleText: "还活着。",
+              instructions: "角色设定：湿袍",
+              status: "ready",
+              audioId: "aud-1",
+            },
+          ],
+        },
+      })}
+      files={[]}
+      busy={false}
+      onSave={() => {}}
+      onRetryVoices={() => {}}
+    />,
+  );
+  expect(html).toContain("生成声音画像");
+  expect(html).toContain("全部生成声音画像");
+  expect(html).not.toContain("再听一条");
 });

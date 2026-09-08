@@ -1,3 +1,4 @@
+import { supportsVideoAudio } from "./video-audio";
 import type { Connection } from "./domain";
 import type { MediaKind } from "./media";
 
@@ -64,6 +65,12 @@ export function prepareVisualRequest(
       `此渠道 ${kind} 最多支持 ${profile.maxReferences} 张参考图，请先合成已确认关键帧`,
     );
   const o = { ...options };
+  if (
+    kind === "video" &&
+    supportsVideoAudio(c) &&
+    o.generateAudio === undefined
+  )
+    o.generateAudio = true;
   if (kind === "video") {
     if (
       !Number.isFinite(profile.maxDuration) ||
@@ -163,7 +170,14 @@ export function prepareVisualRequest(
     if (o.resolution === "1080p" && c.model !== "grok-imagine-video-1.5")
       throw Error("1080p 需要 grok-imagine-video-1.5");
   }
-  const compiled = `${profile.guidance}\n${profile.channelGuidance}\n画幅：${aspect}。${kind === "video" ? `生成时长：${o.duration} 秒；剪辑目标：${o.requestedDuration} 秒。动作需在剪辑目标内完成，剩余时间保持结束状态。` : ""}\n${references ? `参考图共 ${references} 张，按传入顺序编号 1～${references}。` : ""}\n创作要求（事实与台词保持不变）：\n${prompt}${typeof o.promptGuidance === "string" && o.promptGuidance.trim() ? `\n本连接补充要求：${o.promptGuidance}` : ""}`;
+  // A finished text-to-image prompt must not be turned into another writing assignment.
+  if (c.provider === "grok-build" && c.transport === "cli" && kind === "image" && !references) {
+    return {
+      prompt: `${prompt}${typeof o.promptGuidance === "string" && o.promptGuidance.trim() ? `\n${o.promptGuidance.trim()}` : ""}`,
+      options: { ...o, originalPrompt: prompt, promptProfile: profile.id },
+    };
+  }
+  const compiled = `${profile.guidance}\n${kind === "video" && o.generateAudio === true ? "同步声音：依据场景与用户要求判断是否需要环境音效、动作音效或背景音乐，需要时与视频一并生成；无需时保持安静。配乐不盖过对白，不擅自增加人声。" : ""}\n${profile.channelGuidance}\n画幅：${aspect}。${kind === "video" ? `生成时长：${o.duration} 秒；剪辑目标：${o.requestedDuration} 秒。动作需在剪辑目标内完成，剩余时间保持结束状态。` : ""}\n${references ? `参考图共 ${references} 张，按传入顺序编号 1～${references}。` : ""}\n创作要求（事实与台词保持不变）：\n${prompt}${typeof o.promptGuidance === "string" && o.promptGuidance.trim() ? `\n本连接补充要求：${o.promptGuidance}` : ""}`;
   return {
     prompt: compiled,
     options: { ...o, originalPrompt: prompt, promptProfile: profile.id },

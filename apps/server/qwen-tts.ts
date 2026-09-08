@@ -16,10 +16,19 @@ export const qwenVoices = [
 ];
 export const qwenReady = (root: string, id: string) =>
   resolve(root, "runs", "qwen-tts", id, "ready");
-export function qwenOptions(options: Record<string, any>) {
-  const voice = qwenVoices.find(
-    (v) => v.toLowerCase() === String(options.voice || "Vivian").toLowerCase(),
-  );
+export function qwenOptions(options: Record<string, any>, model = "") {
+  const design = model.includes("VoiceDesign");
+  if (
+    design &&
+    (typeof options.instructions !== "string" || !options.instructions.trim())
+  )
+    throw Error("VoiceDesign 必须填写人物声线描述 instructions");
+  const voice = design
+    ? "VoiceDesign"
+    : qwenVoices.find(
+        (v) =>
+          v.toLowerCase() === String(options.voice || "Vivian").toLowerCase(),
+      );
   if (!voice)
     throw Error(
       `Qwen CustomVoice 不支持该音色，可选：${qwenVoices.join("、")}`,
@@ -74,7 +83,7 @@ export async function runQwenTts(
     const output = resolve(cwd, "speech.wav");
     await mkdir(cwd, { recursive: true });
     if (!existsSync(qwenReady(root, job.id))) {
-      const o = qwenOptions(JSON.parse(job.options));
+      const o = qwenOptions(JSON.parse(job.options), c.model);
       const args = [
         c.executable,
         "-u",
@@ -82,8 +91,7 @@ export async function runQwenTts(
         "mlx_audio.tts.generate",
         "--model",
         c.model,
-        "--voice",
-        o.voice,
+        ...(c.model.includes("VoiceDesign") ? [] : ["--voice", o.voice]),
         "--lang_code",
         o.language,
         "--output_path",
