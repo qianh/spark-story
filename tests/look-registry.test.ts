@@ -60,6 +60,28 @@ test("同一地点多个分镜 ID 合成一张主定妆，其余当视图", () =
   expect(sheet.filter((a) => a.kind === "scene")).toHaveLength(1);
   expect(sheet.some((a) => a.id === "LOC-QINGWU-SHANMEN-STAIRS")).toBe(true);
   expect(sheet.some((a) => a.id === "LOC-QINGWU-SHANMEN-LASTSTEP")).toBe(false);
+  // 恢复时再次合并，后补的较短视图 ID 不应替换已有主定妆。
+  collapseLocationLooks(withOuter);
+  expect(lookSheetAssets(withOuter).find((a) => a.kind === "scene")?.id)
+    .toBe("LOC-QINGWU-SHANMEN-STAIRS");
+  expect(withOuter[0].sourceAssetId).toBeUndefined();
+});
+
+test("恢复已经形成循环的地点视图，保留人物产物并建立唯一主定妆", () => {
+  const assets = [
+    { id: "LOC-QINGWU-SHANMEN-STAIRS", kind: "scene", sourceAssetId: "LOC-QINGWU-SHANMEN-OUTER", sourceUsage: "view" as const },
+    { id: "LOC-QINGWU-SHANMEN-OUTER", kind: "scene", sourceAssetId: "LOC-QINGWU-SHANMEN-STAIRS", sourceUsage: "view" as const },
+    { id: "CHAR-SHEN", kind: "character", imageId: "saved-image" },
+  ];
+  collapseLocationLooks(assets);
+  const roots = lookSheetAssets(assets).filter(a => a.kind === "scene");
+  expect(roots).toHaveLength(1);
+  expect(roots[0].sourceAssetId).toBeUndefined();
+  expect(assets.filter(a => a.sourceUsage === "view").every(a => a.sourceAssetId === roots[0].id)).toBe(true);
+  expect(assets[2].imageId).toBe("saved-image");
+  const saved = JSON.stringify(assets);
+  collapseLocationLooks(assets);
+  expect(JSON.stringify(assets)).toBe(saved);
 });
 
 test("外观登记只抽实体和变体，不把视图当资产", () => {

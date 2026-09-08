@@ -78,7 +78,15 @@ export function collapseLocationLooks<
   }
   for (const list of groups.values()) {
     if (list.length < 2) continue;
-    const master = list.reduce((a, b) => (a.id.length <= b.id.length ? a : b));
+    const roots = list.filter((a) => a.sourceUsage !== "view");
+    const master = (roots.length ? roots : list).reduce((a, b) =>
+      a.id.length <= b.id.length ? a : b,
+    );
+    // 反复恢复时保留主定妆；修复旧数据中主定妆反向引用自身视图的循环。
+    if (master.sourceAssetId && list.some((a) => a.id === master.sourceAssetId)) {
+      delete master.sourceAssetId;
+      delete master.sourceUsage;
+    }
     for (const asset of list) {
       if (asset.id === master.id) continue;
       asset.sourceAssetId = master.id;

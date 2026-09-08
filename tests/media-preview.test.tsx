@@ -111,6 +111,40 @@ test("进度条展示已落地数量、当前供应商状态和待生成项", ()
   expect(html).toContain("供应商生成中");
   expect(html).toContain("林小雨");
   expect(html).toContain("雨巷");
+  expect(html).toContain('class="media-generation-track"');
+  expect(html).toMatch(/<li[^>]*>[\s\S]*林小雨[\s\S]*<\/li>/);
+  expect(html).not.toContain("media-generation-items");
+});
+
+test("进度条不把同一地点的视图算进产物格", () => {
+  const progress = mediaGenerationProgress({
+    bundle: {
+      type: "assets",
+      data: {
+        assets: [
+          { id: "LOC-GATE", name: "青梧宗山门", kind: "scene" },
+          {
+            id: "LOC-GATE-LAST",
+            name: "青梧宗山门",
+            kind: "scene",
+            sourceUsage: "view",
+          },
+          {
+            id: "LOC-GATE-OUTER",
+            name: "青梧宗山门",
+            kind: "scene",
+            sourceUsage: "view",
+          },
+        ],
+        voices: [],
+      },
+    },
+    jobs: [],
+    running: true,
+  });
+  expect(progress.total).toBe(1);
+  expect(progress.items.map((i) => i.id)).toEqual(["LOC-GATE"]);
+  expect(progress.label).toContain("0 / 1");
 });
 
 test("规划阶段在预览上方说明正在整理方案，空预览不再假装没有工作", () => {

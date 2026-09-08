@@ -179,12 +179,14 @@ export function plannedMediaItems(
   const data = bundle.data;
   if (bundle.type === "assets")
     return [
-      ...(data.assets || []).map((a: any) => ({
-        id: String(a.id),
-        name: String(a.name || a.id),
-        kind: "image",
-        fileId: a.imageId,
-      })),
+      ...(data.assets || [])
+        .filter((a: any) => a.sourceUsage !== "view")
+        .map((a: any) => ({
+          id: String(a.id),
+          name: String(a.name || a.id),
+          kind: "image",
+          fileId: a.imageId,
+        })),
       ...(data.voices || []).map((v: any, i: number) => ({
         id: `voice-${v.character}-${i}`,
         name: `${v.character} 试听`,

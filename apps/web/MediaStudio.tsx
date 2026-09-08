@@ -60,31 +60,20 @@ export function MediaGenerationProgress({
       {progress.phase === "planning" ? (
         <p>方案确定后，生成完成的图片、声音和视频会逐项出现在这里。</p>
       ) : (
-        <>
-          <ol className="media-generation-track">
-            {progress.items.map((item, i) => (
-              <li
-                key={item.id}
-                className={
-                  item.fileId ? "done" : i === pending ? "current" : ""
-                }
-                title={item.name}
-              />
-            ))}
-          </ol>
-          <ul className="media-generation-items">
-            {progress.items.map((item, i) => (
-              <li
-                key={item.id}
-                className={
-                  item.fileId ? "done" : i === pending ? "current" : ""
-                }
-              >
-                {item.name}
-              </li>
-            ))}
-          </ul>
-        </>
+        <ol className="media-generation-track">
+          {progress.items.map((item, i) => (
+            <li
+              key={item.id}
+              className={
+                item.fileId ? "done" : i === pending ? "current" : ""
+              }
+              title={item.name}
+            >
+              <i />
+              <span>{item.name}</span>
+            </li>
+          ))}
+        </ol>
       )}
     </div>
   );
