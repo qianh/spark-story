@@ -61,6 +61,7 @@ import {
 import "./style.css";
 import "./media.css";
 import {
+  ArtifactLibrary,
   BundleView,
   MediaJobs,
   MediaLibrary,
@@ -251,7 +252,7 @@ function App() {
     ? selectedEpisode
     : board?.episodes?.[0]?.number || 1;
   const visibleTasks =
-    board?.tasks.filter((t) => !t.episode || t.episode === episode) || [];
+    board?.tasks.filter((t) => globalStages.includes(t.stage) || t.episode === episode) || [];
   const taskAt = (stage: number) => visibleTasks.find((t) => t.stage === stage);
   const task = board?.tasks.find((t) => t.id === workspace);
   const nextTask =
@@ -506,7 +507,7 @@ function App() {
                         {String(rank(task.stage) + 1).padStart(2, "0")}
                       </p>
                       <h1>
-                        {task.episode ? `第 ${task.episode} 集 · ` : ""}
+                        {globalStages.includes(task.stage) ? "全剧 · " : `第 ${task.episode} 集 · `}
                         {task.title}
                         <span className={"status " + task.status}>
                           {taskStateLabel(task)}
@@ -551,14 +552,14 @@ function App() {
                       >
                         <Pause size={15} /> 立即中断
                       </button>
-                      {![
+                      {(![
                         "running",
                         "reviewing",
                         "coordinating",
-                        "approved",
                         "awaiting_user",
                         "blocked",
-                      ].includes(task.status) && (
+                      ].includes(task.status) &&
+                        (task.status !== "approved" || task.stage === 3)) && (
                         <button
                           className="button primary"
                           disabled={busy}
@@ -570,7 +571,10 @@ function App() {
                             )
                           }
                         >
-                          <Play size={15} /> 开始执行
+                          <Play size={15} />{" "}
+                          {task.stage === 3 && task.status === "approved"
+                            ? "补后续定妆"
+                            : "开始执行"}
                         </button>
                       )}
                     </div>
@@ -1228,32 +1232,17 @@ function App() {
                     />
                   )}
                   {board?.artifacts.length ? (
-                    <div className="asset-grid">
-                      {board.artifacts.map((a) => (
-                        <button
-                          className="panel asset-card"
-                          key={a.id}
-                          onClick={() => {
-                            setWorkspace(a.taskId);
-                            setPage("board");
-                          }}
-                        >
-                          <div className="document-thumb">
-                            <FileText size={32} />
-                            <p>{a.content.slice(0, 160)}</p>
-                          </div>
-                          <h3>
-                            {board.tasks.find((t) => t.id === a.taskId)?.title}
-                          </h3>
-                          <p>
-                            修订 {a.revision}{" "}
-                            <span className="tag">
-                              {a.status === "approved" ? "正式版" : "候选版"}
-                            </span>
-                          </p>
-                        </button>
-                      ))}
-                    </div>
+                    <ArtifactLibrary
+                      artifacts={board.artifacts}
+                      tasks={board.tasks}
+                      projectId={projectId}
+                      act={act}
+                      onUpdated={reload}
+                      onOpen={(a) => {
+                        setWorkspace(a.taskId);
+                        setPage("board");
+                      }}
+                    />
                   ) : (
                     <Empty
                       icon={FolderOpen}
@@ -1589,7 +1578,7 @@ function App() {
                       )}
                     </select>
                     <p>
-                      全剧故事先确认；本集各阶段单独审核，已确认资产跨集复用。
+                      故事与定妆为全剧共享；切换集数只切换剧本、分镜、关键帧及后期任务。
                     </p>
                   </div>
                   <div className="stage-strip">
@@ -1671,7 +1660,7 @@ function App() {
                                 "从来源整理故事主线、人物关系与世界规则，建立整部作品的创作基础。",
                                 "根据故事容量确定集数，逐集规划事件、人物变化、冲突、悬念与前后衔接。",
                                 "依据已确认的全剧分集规划，细写本集的完整分场剧本，不提前消耗后续剧情。",
-                                "确定角色外观、声音与主要场景，建立一致的视觉资产。",
+                                "依据完整故事与外观登记，按集补出本集用到的角色、声音、场景与道具；全剧共用，后集再补新变体。",
                                 "把剧本转为镜头语言，使用动态预览检查节奏。",
                                 "依据确认分镜生成关键帧、视频与正式配音。",
                                 "完成镜头剪辑、音乐音效、字幕和成片导出。",
@@ -2399,7 +2388,9 @@ function ConnectionForm({
       {provider === "qwen-tts" && (
         <p className="muted">
           可执行文件填写 MLX 环境的 Python 绝对路径，模型填写 Qwen3-TTS
-          CustomVoice 或 VoiceDesign 的 MLX 模型 ID 或本地路径。VoiceDesign
+          CustomVoice 或 VoiceDesign 的 MLX 模型 ID 或本地路径。少年或幼童声线必须用
+          VoiceDesign：它按自然语言描述设计声线。CustomVoice
+          的指示只改变情绪，Aiden、Serena 等预设不会变成少年。VoiceDesign
           必须填写 instructions
           人物声线描述，不使用固定音色；正式角色配音会使用角色设定。可绑定语音模型，无需
           API Key。高级参数支持 voice（默认 Vivian）、language（默认

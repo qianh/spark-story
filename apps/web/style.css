@@ -1766,6 +1766,9 @@ html[data-theme="dark"] .episode-bar select {
   padding: 2px 5px;
   margin-left: 4px;
 }
+.asset-library {
+  margin: 8px 0 25px;
+}
 .asset-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1774,6 +1777,32 @@ html[data-theme="dark"] .episode-bar select {
 .asset-card {
   text-align: left;
   padding: 14px;
+}
+.asset-card.selected {
+  outline: 2px solid var(--accent, #c4a574);
+  outline-offset: 1px;
+}
+.asset-card-open {
+  display: block;
+  width: 100%;
+  padding: 0;
+  background: none;
+  text-align: left;
+}
+.asset-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 10px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.asset-card-meta input {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  cursor: pointer;
 }
 .document-thumb {
   height: 160px;
@@ -1787,13 +1816,6 @@ html[data-theme="dark"] .episode-bar select {
   font-size: 9px;
   white-space: pre-wrap;
   margin-top: 12px;
-}
-.asset-card > p {
-  font-size: 10px;
-  color: var(--muted);
-  margin-top: 8px;
-  display: flex;
-  justify-content: space-between;
 }
 .agent-grid {
   display: grid;

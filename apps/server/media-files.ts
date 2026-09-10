@@ -7,6 +7,22 @@ import { Store } from "./store";
 import type { MediaFile, Timeline } from "../../packages/media";
 import { durationIssues } from "../../packages/production";
 
+const mediaIdKeys = new Set([
+  "imageId",
+  "audioId",
+  "videoId",
+  "musicId",
+  "soundId",
+  "previewId",
+  "exportId",
+  "dialogueTrackId",
+  "mixedTrackId",
+  "selectedCandidateId",
+  "sourceAudioId",
+  "subtitleId",
+  "fileId",
+]);
+const mediaIdLists = new Set(["candidates", "generationReferenceIds"]);
 export function referencedMediaIds(content: string) {
   const ids = new Set<string>();
   const named =
@@ -18,6 +34,36 @@ export function referencedMediaIds(content: string) {
     for (const id of match[1].match(/"([^"]+)"/g) || [])
       ids.add(id.slice(1, -1));
   return [...ids];
+}
+export function stripReferencedMedia(content: string, deleted: Set<string>) {
+  try {
+    return JSON.stringify(stripMediaValue(JSON.parse(content), deleted));
+  } catch {
+    return content;
+  }
+}
+function stripMediaValue(value: unknown, deleted: Set<string>): unknown {
+  if (Array.isArray(value))
+    return value
+      .filter((item) => !(typeof item === "string" && deleted.has(item)))
+      .map((item) => stripMediaValue(item, deleted));
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (mediaIdKeys.has(key) && typeof item === "string" && deleted.has(item))
+        continue;
+      if (mediaIdLists.has(key) && Array.isArray(item)) {
+        const next = item.filter(
+          (id) => typeof id !== "string" || !deleted.has(id),
+        );
+        if (next.length) out[key] = next;
+        continue;
+      }
+      out[key] = stripMediaValue(item, deleted);
+    }
+    return out;
+  }
+  return value;
 }
 export async function command(
   binary: string,
@@ -187,39 +233,81 @@ export class MediaFiles {
       throw Error("任务正在执行，请先中断再删除素材");
     const rows = unique.map((id) => this.get(id, projectId));
     const deleted = new Set(unique);
-    // Validate the whole batch before changing records or touching shared files.
-    const disposable: string[] = [];
+    const staleJobs = this.store
+      .list<{ id: string; inputs: string }>(
+        "SELECT id, inputs FROM media_jobs WHERE projectId=? AND status NOT IN ('completed','failed','cancelled')",
+        projectId,
+      )
+      .filter((job) =>
+        (JSON.parse(job.inputs) as string[]).some((id) => deleted.has(id)),
+      );
     const artifacts = this.store.list<{
       id: string; content: string; status: string; stage: number;
-      revision: number; currentRevision: number;
-    }>(`SELECT a.*, t.stage, t.revision AS currentRevision
-        FROM artifacts a JOIN tasks t ON t.id=a.taskId`);
+    }>(`SELECT a.id, a.content, a.status, t.stage
+        FROM artifacts a JOIN tasks t ON t.id=a.taskId WHERE t.projectId=?`, projectId);
+    const disposable: string[] = [];
+    const artifactUpdates: { id: string; content: string }[] = [];
     for (const artifact of artifacts) {
       const refs = referencedMediaIds(artifact.content);
       if (!refs.some((id) => deleted.has(id))) continue;
-      if (artifact.status === "candidate" && artifact.stage === 3 &&
-          artifact.revision === artifact.currentRevision &&
-          refs.every((id) => deleted.has(id))) {
+      const remaining = refs.filter((id) => !deleted.has(id));
+      if (
+        (artifact.status === "candidate" || artifact.status === "rejected") &&
+        artifact.stage === 3 &&
+        remaining.length === 0
+      )
         disposable.push(artifact.id);
-      } else throw Error("素材仍被产物引用，不能删除；请先解除引用");
+      else
+        artifactUpdates.push({
+          id: artifact.id,
+          content: stripReferencedMedia(artifact.content, deleted),
+        });
     }
-    for (const table of ["asset_library", "voice_library"]) {
-      const entries = this.store.list<{ data: string }>(`SELECT data FROM ${table}`);
-      if (entries.some((entry) => referencedMediaIds(entry.data).some((id) => deleted.has(id))))
-        throw Error("素材仍被资产库或声音库引用，不能删除；请先解除引用");
+    const libraryUpdates: { sql: string; args: any[] }[] = [];
+    for (const entry of this.store.list<{ id: string; data: string }>(
+      "SELECT id, data FROM asset_library WHERE projectId=?",
+      projectId,
+    )) {
+      if (!referencedMediaIds(entry.data).some((id) => deleted.has(id))) continue;
+      libraryUpdates.push({
+        sql: "UPDATE asset_library SET data=? WHERE id=?",
+        args: [stripReferencedMedia(entry.data, deleted), entry.id],
+      });
     }
-    const jobs = this.store.list<{ inputs: string }>(
-      "SELECT inputs FROM media_jobs WHERE status NOT IN ('completed','failed','cancelled')",
-    );
-    if (jobs.some((job) => (JSON.parse(job.inputs) as string[]).some((id) => deleted.has(id))))
-      throw Error("素材仍被媒体任务引用，不能删除");
+    for (const entry of this.store.list<{
+      character: string; connectionId: string; data: string;
+    }>("SELECT character, connectionId, data FROM voice_library WHERE projectId=?", projectId)) {
+      if (!referencedMediaIds(entry.data).some((id) => deleted.has(id))) continue;
+      libraryUpdates.push({
+        sql: "UPDATE voice_library SET data=? WHERE projectId=? AND character=? AND connectionId=?",
+        args: [
+          stripReferencedMedia(entry.data, deleted),
+          projectId,
+          entry.character,
+          entry.connectionId,
+        ],
+      });
+    }
     this.store.db.transaction(() => {
       for (const id of disposable)
         this.store.db.run("DELETE FROM artifacts WHERE id=?", [id]);
+      for (const update of artifactUpdates)
+        this.store.db.run("UPDATE artifacts SET content=? WHERE id=?", [
+          update.content,
+          update.id,
+        ]);
+      for (const update of libraryUpdates)
+        this.store.db.run(update.sql, update.args);
+      const now = new Date().toISOString();
+      for (const job of staleJobs)
+        this.store.db.run(
+          "UPDATE media_jobs SET status='failed', inputs='[]', remoteId='', error='输入素材已删除', updatedAt=? WHERE id=?",
+          [now, job.id],
+        );
       for (const row of rows) {
         this.store.db.run(
           "UPDATE media_jobs SET status='failed', outputId='', remoteId='', error='输出素材已删除', updatedAt=? WHERE outputId=?",
-          [new Date().toISOString(), row.id],
+          [now, row.id],
         );
         this.store.db.run("DELETE FROM media_files WHERE id=?", [row.id]);
       }

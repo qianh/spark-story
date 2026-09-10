@@ -6,7 +6,10 @@ import {
   lookRegistryAgentPrompt,
   lookRegistrySchema,
   lookSheetAssets,
+  mergeLookAssets,
+  nextIncompleteLookEpisode,
   parseLookAssetId,
+  requiredLooksForBeats,
 } from "../packages/look-registry";
 
 test("同一地点多个分镜 ID 合成一张主定妆，其余当视图", () => {
@@ -122,4 +125,76 @@ test("外观登记只抽实体和变体，不把视图当资产", () => {
     variantId: "ruined",
   });
   expect(parsed.entities[0].variants).toHaveLength(2);
+});
+
+const tokenRegistry = lookRegistrySchema.parse({
+  type: "look-registry",
+  entities: [
+    {
+      id: "token",
+      name: "信物",
+      kind: "prop",
+      variants: [
+        {
+          id: "whole",
+          name: "完整",
+          kind: "form",
+          identity: "玉牌",
+          form: "完整",
+          source: "第一章",
+          fromBeatId: "CH001-B001",
+        },
+        {
+          id: "broken",
+          name: "断裂",
+          kind: "form",
+          identity: "玉牌",
+          form: "断裂",
+          source: "第二章",
+          fromBeatId: "CH002-B001",
+        },
+      ],
+    },
+  ],
+});
+
+test("按集出定妆：第一集只要本集变体，后段破败留到后集", () => {
+  expect(
+    requiredLooksForBeats(tokenRegistry, ["CH001-B001"], true).map((a) => a.id),
+  ).toEqual(["token:whole"]);
+  expect(
+    requiredLooksForBeats(tokenRegistry, ["CH002-B001"], false).map((a) => a.id),
+  ).toEqual(["token:broken"]);
+  const first = nextIncompleteLookEpisode(
+    tokenRegistry,
+    {
+      episodes: [
+        { sourceBeatIds: ["CH001-B001"] },
+        { sourceBeatIds: ["CH002-B001"] },
+      ],
+    },
+    null,
+    [],
+  );
+  expect(first.episode).toBe(1);
+  expect(first.required.map((a) => a.id)).toEqual(["token:whole"]);
+  const second = nextIncompleteLookEpisode(
+    tokenRegistry,
+    {
+      episodes: [
+        { sourceBeatIds: ["CH001-B001"] },
+        { sourceBeatIds: ["CH002-B001"] },
+      ],
+    },
+    null,
+    ["token:whole"],
+  );
+  expect(second.episode).toBe(2);
+  expect(second.required.map((a) => a.id)).toEqual(["token:broken"]);
+  expect(
+    mergeLookAssets(
+      [{ id: "token:whole", imageId: "img-1" }],
+      [{ id: "token:broken" }, { id: "token:whole" }],
+    ).map((a) => a.id + ":" + (a.imageId || "")),
+  ).toEqual(["token:whole:img-1", "token:broken:"]);
 });

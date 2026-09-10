@@ -138,8 +138,99 @@ export function attachShotLookViews<
   return extra.length ? [...assets, ...extra] : assets;
 }
 
+export function requiredLooksForBeats(
+  registry: LookRegistry,
+  beatIds: string[],
+  opening = false,
+) {
+  const beats = new Set(beatIds);
+  const out: { id: string; kind: LookEntity["kind"]; name: string }[] = [];
+  for (const entity of registry.entities) {
+    const matched = entity.variants.filter(
+      (variant) => variant.fromBeatId && beats.has(variant.fromBeatId),
+    );
+    const picks = matched.length
+      ? matched
+      : opening
+        ? [entity.variants[0]]
+        : [];
+    for (const variant of picks)
+      out.push({
+        id: lookAssetId(entity.id, variant.id),
+        kind: entity.kind,
+        name: `${entity.name} ${variant.name}`,
+      });
+  }
+  return out;
+}
+
+export function episodeLookBeats(
+  plan: { episodes?: { sourceBeatIds?: string[]; sourceStepIds?: string[] }[] } | null
+    | undefined,
+  story: { chapters?: { beats?: { id: string }[] }[] } | null | undefined,
+  episodeNumber: number,
+) {
+  const opening = episodeNumber <= 1;
+  const episode = plan?.episodes?.[Math.max(0, episodeNumber - 1)];
+  if (episode)
+    return {
+      beatIds: episode.sourceBeatIds || episode.sourceStepIds || [],
+      opening,
+    };
+  const chapter = story?.chapters?.[Math.max(0, episodeNumber - 1)];
+  return {
+    beatIds: (chapter?.beats || []).map((beat) => beat.id),
+    opening,
+  };
+}
+
+export function nextIncompleteLookEpisode(
+  registry: LookRegistry | null | undefined,
+  plan: { episodes?: { sourceBeatIds?: string[]; sourceStepIds?: string[] }[] } | null
+    | undefined,
+  story: { chapters?: { beats?: { id: string }[] }[] } | null | undefined,
+  existingIds: Iterable<string>,
+) {
+  const have = new Set(existingIds);
+  if (!registry?.entities?.length) {
+    const { beatIds, opening } = episodeLookBeats(plan, story, 1);
+    return { episode: 1, required: [] as ReturnType<typeof requiredLooksForBeats>, beatIds, opening };
+  }
+  const n = Math.max(plan?.episodes?.length || 0, story?.chapters?.length || 0, 1);
+  for (let episode = 1; episode <= n; episode++) {
+    const { beatIds, opening } = episodeLookBeats(plan, story, episode);
+    const required = requiredLooksForBeats(registry, beatIds, opening);
+    if (required.some((look) => !have.has(look.id)))
+      return { episode, required, beatIds, opening };
+  }
+  const { beatIds, opening } = episodeLookBeats(plan, story, n);
+  return {
+    episode: n,
+    required: requiredLooksForBeats(registry, beatIds, opening),
+    beatIds,
+    opening,
+  };
+}
+
+export function mergeLookAssets<T extends { id: string; imageId?: string }>(
+  base: T[],
+  extra: T[],
+) {
+  const map = new Map(base.map((asset) => [asset.id, asset]));
+  for (const asset of extra) {
+    const previous = map.get(asset.id);
+    map.set(
+      asset.id,
+      previous
+        ? { ...previous, ...asset, imageId: asset.imageId || previous.imageId }
+        : asset,
+    );
+  }
+  return [...map.values()];
+}
+
 export function lookRegistryAgentPrompt(bible: string, chaptersJson: string) {
-  return `你是外观登记 Agent。从已确认全剧设定抽出可复用外观名册，不出图，不写镜头状态。每个实体至少一个变体。人物按成长阶段分变体（幼童/少年/青年；仅设定写明年长才用中年/老年），换装、破败形制另列变体。不要为门外、末阶、近景等视图建项。不要写入夜雨、熄灯、高烧、闭眼、出剑。每条 identity/form 必须带来源（设定原文或章节段落）。只返回 JSON {"type":"look-registry","entities":[{"id":"稳定ID","name":"名称","kind":"character或scene或prop","variants":[{"id":"youth或default或ruined","name":"变体名","kind":"growth或costume或form","identity":"固定身份","form":"可复用形制","source":"来源","ageBand":"child|teen|youth|adult|elder","fromBeatId":"可选段落ID"}]}]}。
+  return `你是外观登记 Agent。从已确认全剧设定抽出可复用外观名册，不出图，不写镜头状态。每个实体至少一个变体。人物按成长阶段分变体（幼童/少年/青年；仅设定写明年长才用中年/老年），换装、破败形制另列变体。不要为门外、末阶、近景等视图建项。不要写入夜雨、熄灯、高烧、闭眼、出剑。每条 identity/form 必须带来源（设定原文或章节段落）。后集才出现的换装、破败、成长变体必须填写 fromBeatId（首次出现的段落），供按集出图。只返回 JSON {"type":"look-registry","entities":[{"id":"稳定ID","name":"名称","kind":"character或scene或prop","variants":[{"id":"youth或default或ruined","name":"变体名","kind":"growth或costume或form","identity":"固定身份","form":"可复用形制","source":"来源","ageBand":"child|teen|youth|adult|elder","fromBeatId":"首次出现的段落ID"}]}]}。
 全剧设定：${bible}
 章节与段落：${chaptersJson}`;
 }

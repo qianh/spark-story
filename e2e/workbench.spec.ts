@@ -47,14 +47,14 @@ test("制作规则可编辑、非法区间被拒绝、保存后重置规划但�
   await page.goto("/");
   await page.getByRole("button", { name: /画风 ·/ }).click();
   await expect(page.getByRole("heading", { name: "热血赛璐璐" })).toBeVisible();
-  await expect(page.getByText("生成时使用的画风说明")).toBeVisible();
+  await expect(page.getByText("当前作品正在用于生成的说明")).toBeVisible();
   await expect(page.getByText("赛璐璐动漫，清晰轮廓")).toBeVisible();
   await page.getByRole("button", { name: "更换其他画风" }).click();
   await page.getByRole("button", { name: /三维仙侠国漫/ }).click();
   await expect(
     page.getByRole("heading", { name: "三维仙侠国漫" }),
   ).toBeVisible();
-  await expect(page.getByText("SHARED STYLE DNA")).toBeVisible();
+  await expect(page.getByText("XIANXIA DONGHUA LOOK")).toBeVisible();
   await page.getByRole("button", { name: "应用到当前作品" }).click();
   await expect(
     page.getByRole("button", { name: /画风 · 三维仙侠国漫/ }),
@@ -149,7 +149,7 @@ test("完整故事先确认，拆集后可选择各集，每个确认点独立�
       timeout: 10000,
     });
     const board = await (await request.get("/api/projects/" + p.id)).json();
-    expect(board.tasks[index + 1].status).toBe("blocked");
+    expect(board.tasks.find((t: any) => t.stage === [7, 1, 2, 8][index] && (!t.episode || t.episode === 1)).status).toBe("blocked");
     if (index === 2) {
       await expect(
         page.locator(".artifact-panel .markdown-content"),
@@ -174,6 +174,13 @@ test("完整故事先确认，拆集后可选择各集，每个确认点独立�
       });
     }
     await page.getByRole("button", { name: "确认此版本" }).click();
+    if (index === 1) {
+      const confirmed = await (await request.get("/api/projects/" + p.id)).json();
+      const looks = confirmed.tasks.filter((t: any) => t.stage === 3);
+      expect(looks).toHaveLength(1);
+      expect(looks[0].episode).toBe(0);
+      expect(looks[0].status).toBe("ready");
+    }
     const next = ["完整故事稿", "全剧分集规划", "单集剧本", "文字分镜"][index];
     await expect(
       page.getByRole("button", { name: "进入" + next + " →" }),
@@ -182,9 +189,18 @@ test("完整故事先确认，拆集后可选择各集，每个确认点独立�
       await page.getByRole("button", { name: "进入" + next + " →" }).click();
   }
   await page.getByRole("button", { name: "返回阶段看板" }).click();
+  for (const number of ["1", "2"]) {
+    await page.getByLabel("制作集数").selectOption(number);
+    await page.locator(".stage-strip button").filter({ hasText: "定妆与资产" }).click();
+    await page.locator(".task-card").click();
+    await expect(page.locator(".page-heading h1")).toContainText("全剧 · 定妆与资产");
+    await expect(page.locator(".page-heading h1")).not.toContainText("第");
+    await page.getByRole("button", { name: "返回阶段看板" }).click();
+  }
   await page.getByLabel("制作集数").selectOption("2");
   await expect(page.getByLabel("制作集数")).toHaveValue("2");
-  await page.getByRole("button", { name: "进入当前工作区" }).click();
+  await page.locator(".stage-strip button").filter({ hasText: "单集剧本" }).click();
+  await page.locator(".task-card").click();
   await expect(page.locator(".page-heading h1")).toContainText("单集剧本");
   await page.getByRole("button", { name: "开始执行", exact: true }).click();
   await expect(page.getByRole("button", { name: "确认此版本" })).toBeVisible({
@@ -504,7 +520,7 @@ test("真实图片与视频导入、预览、下载和单独生成入口", async
     const assetTask = board.tasks.find((t: { stage: number }) => t.stage === 3);
     expect(assetTask).toBeTruthy();
     assetTask.status = "running";
-    assetTask.episode = 1;
+    expect(assetTask.episode).toBe(0);
     const mediaBoard = await (
       await request.get("/api/projects/" + project.id)
     ).json();
@@ -578,7 +594,7 @@ test("真实图片与视频导入、预览、下载和单独生成入口", async
     await expect(previewProgress).toContainText("供应商生成中");
     await expect(page.getByAltText("验证定妆.png")).toBeVisible();
     await expect(page.getByText("雨巷", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "重新生成" })).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "再抽一张" })).toHaveCount(1);
     await expect(page.getByRole("button", { name: "生成此图" })).toHaveCount(1);
     await expect(page.getByText("等待实际产物")).toBeVisible();
     await expect(page.getByText("产物将在这里呈现")).toHaveCount(0);

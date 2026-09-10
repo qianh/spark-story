@@ -420,6 +420,12 @@ const server = Bun.serve<{
         await runtime.media.files.removeMany(removeMedia[1], input.ids);
         return json({ ok: true, deleted: input.ids.length });
       }
+      const removeArtifacts = path.match(/^\/api\/projects\/([^/]+)\/artifacts$/);
+      if (removeArtifacts && req.method === "DELETE") {
+        const input = z.object({ ids: z.array(z.string()).min(1) }).parse(await body(req));
+        store.removeArtifacts(removeArtifacts[1], input.ids);
+        return json({ ok: true, deleted: input.ids.length });
+      }
       if (path === "/api/media/jobs" && req.method === "POST") {
         const input = z
           .object({

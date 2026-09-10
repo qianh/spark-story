@@ -58,6 +58,12 @@ test("本地配音传递原文与情绪、校验 WAV、零预算复用、转写�
     expect(r.text).toBe("你好，先走。");
     expect(r.args).toContain("Chinese");
     expect(r.args).toContain("轻声、焦急");
+    expect(r.args).toContain("--temperature");
+    expect(r.args).toContain("0.9");
+    expect(r.args).toContain("--top_p");
+    expect(r.args).toContain("1.0");
+    expect(r.args).toContain("--repetition_penalty");
+    expect(r.args).toContain("1.05");
     expect(await m.run(j.id)).toBe(id);
     expect(s.list("SELECT * FROM costs")).toHaveLength(0);
     expect(await m.transcribe(id, new AbortController().signal)).toBe("实际音频转写");
@@ -79,7 +85,12 @@ test("VoiceDesign 接受描述而非预设音色，缺少描述在调用前拒�
   const model = "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit";
   expect(connectionInput.safeParse({ ...c, model }).success).toBe(true);
   expect(() => qwenOptions({}, model)).toThrow("人物声线描述");
-  expect(
-    qwenOptions({ instructions: "青年男性，清冷克制，普通话" }, model).voice,
-  ).toBe("VoiceDesign");
+  const o = qwenOptions(
+    { instructions: "体现17岁少年男声，营造出未满20岁清亮国漫少年配音的听觉效果。" },
+    model,
+  );
+  expect(o.voice).toBe("VoiceDesign");
+  expect(o.temperature).toBe(0.9);
+  expect(o.top_p).toBe(1);
+  expect(o.repetition_penalty).toBe(1.05);
 });

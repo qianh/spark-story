@@ -88,7 +88,7 @@ export function StyleForm({
         {inForce ? "当前作品正在用于生成的说明" : "生成时使用的画风说明"}
       </h3>
       <p className="muted">
-        公共画风 DNA 全系列不改。人物、道具、场景只换模块和内容。定妆、关键帧和视频都只使用作品里锁定的这一份说明。
+        通用画风原文放在每张图最前面，后面只追加资产类型与内容。定妆、关键帧和视频都只使用作品里锁定的这一份说明。
       </p>
       <pre className="style-prompt">{promptText}</pre>
       {inForce && applied?.characterModule && (

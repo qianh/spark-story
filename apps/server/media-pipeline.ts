@@ -6,14 +6,32 @@ import {
   characterContentTemplate,
   migrateLegacyContent,
   productionVisualPrompt,
+  visualReviewPrompt,
+  visualStyleKey,
+  isSeriesMasterLook,
+  isXianxiaLookLock,
+  isUniversalXianxia,
+  masterReferenceNote,
+  xianxiaModules,
 } from "../../packages/visual-style";
 import {
-  attachShotLookViews,
   collapseLocationLooks,
+  mergeLookAssets,
+  nextIncompleteLookEpisode,
+  requiredLooksForBeats,
 } from "../../packages/look-registry";
 import {
+  seriesPlanSchema,
+  storySchema,
+  structured,
+} from "../../packages/series";
+import {
   castQwenVoices,
+  mergeVoiceCards,
+  hasCurrentVoicePolicy,
+  seriesVoiceDna,
   fillMissingVoiceCards,
+  pickShotVoice,
   textLen,
 } from "./voice-casting";
 import {
@@ -23,6 +41,7 @@ import {
 import { qwenVoices } from "./qwen-tts";
 import { mediaProfile } from "../../packages/media-profiles";
 import type { Runtime } from "./runtime";
+import type { MediaReviewProgress } from "../../packages/progress";
 import { parseResult } from "./connectors";
 import {
   productionPrompt,
@@ -37,6 +56,7 @@ import {
 } from "../../packages/domain";
 import {
   assetPlanSchema,
+  voiceInBatch,
   storyboardSchema,
   timelineSchema,
   mediaBundle,
@@ -45,6 +65,67 @@ import {
   type Timeline,
   type MediaFile,
 } from "../../packages/media";
+
+export const lookImageConcurrency = 3;
+
+async function runLookImagePool(
+  ordered: AssetPlan["assets"],
+  signal: AbortSignal,
+  produce: (
+    asset: AssetPlan["assets"][number],
+    workSignal: AbortSignal,
+  ) => Promise<void>,
+) {
+  const abort = new AbortController();
+  const combined = AbortSignal.any([signal, abort.signal]);
+  const tasks = new Map<string, Promise<void>>();
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  const acquire = () =>
+    new Promise<void>((resolve) => {
+      if (active < lookImageConcurrency) {
+        active += 1;
+        resolve();
+        return;
+      }
+      waiting.push(() => {
+        active += 1;
+        resolve();
+      });
+    });
+  const release = () => {
+    active -= 1;
+    waiting.shift()?.();
+  };
+  const byId = new Map(ordered.map((asset) => [asset.id, asset]));
+  const run = (asset: AssetPlan["assets"][number]) => {
+    const cached = tasks.get(asset.id);
+    if (cached) return cached;
+    const job = (async () => {
+      if (asset.sourceAssetId) {
+        const source = byId.get(asset.sourceAssetId);
+        if (source) await run(source);
+      }
+      await acquire();
+      try {
+        if (combined.aborted) throw Error("任务已中断");
+        await produce(asset, combined);
+      } finally {
+        release();
+      }
+    })();
+    tasks.set(asset.id, job);
+    return job;
+  };
+  try {
+    for (const asset of ordered.filter((item) => isSeriesMasterLook(item)))
+      await run(asset);
+    await Promise.all(ordered.map((asset) => run(asset)));
+  } catch (error) {
+    abort.abort();
+    throw error;
+  }
+}
 
 export class MediaPipeline {
   constructor(public runtime: Runtime) {}
@@ -65,7 +146,7 @@ export class MediaPipeline {
         const edited =
           round === task.round
             ? store.one<Artifact>(
-                "SELECT * FROM artifacts WHERE taskId=? AND revision=? AND status='candidate' ORDER BY createdAt DESC LIMIT 1",
+                "SELECT * FROM artifacts WHERE taskId=? AND revision=? AND status='candidate' ORDER BY rowid DESC LIMIT 1",
                 task.id,
                 task.revision,
               )
@@ -94,48 +175,107 @@ export class MediaPipeline {
         const visual = files.filter((f) => ["image", "video"].includes(f.kind));
         const speechIds = new Set<string>();
         for (const v of "voices" in bundle.data ? bundle.data.voices : [])
-          if (v.audioId) speechIds.add(v.audioId);
+          if (v.audioId && (!("assets" in bundle.data) || voiceInBatch(bundle.data, v))) speechIds.add(v.audioId);
         for (const shot of "shots" in bundle.data ? bundle.data.shots : [])
           if (shot.audioId) speechIds.add(shot.audioId);
+        const nativeShots = ("shots" in bundle.data ? bundle.data.shots : []).filter(
+          (shot) => shot.route === "native" && shot.videoId && shot.dialogue,
+        );
+        const review: MediaReviewProgress = {
+          startedAt: new Date().toISOString(),
+          step: "speech",
+          current: "准备审核素材",
+          speechDone: 0,
+          speechTotal: speechIds.size + nativeShots.length,
+          visualDone: 0,
+          visualTotal: visual.length,
+          summaryDone: false,
+        };
+        const saveReview = (step: MediaReviewProgress["step"], current: string) => {
+          this.assertCurrent(task, signal);
+          review.step = step;
+          review.current = current;
+          store.db.run("INSERT OR REPLACE INTO media_review_progress VALUES(?,?,?)", [
+            task.id, task.revision, JSON.stringify(review),
+          ]);
+        };
+        saveReview("speech", "准备声音转写");
         for (const shot of "shots" in bundle.data ? bundle.data.shots : [])
           if (shot.route === "native" && shot.videoId && shot.dialogue) {
+            saveReview("speech", `${shot.title || shot.id} · 提取视频声音`);
             const audio = await media.files.nativeAudio(shot.videoId, signal);
             speechIds.add(audio.id);
           }
+        review.speechTotal = speechIds.size;
         for (const id of speechIds) {
+          saveReview("speech", files.find((f) => f.id === id)?.name || "视频原声");
           const transcript = await media.transcribe(id, signal);
           reports.push(`配音 ${id} 实际语音转写：${transcript}`);
+          review.speechDone++;
+          saveReview("speech", "声音转写已完成");
         }
-        for (const file of visual) {
-          this.assertCurrent(task, signal);
-          const paths = await media.files.inspectFrames(file.id, signal);
-          const report = reviewSchema.parse(
-            parseResult(
-              await this.runtime.call(
-                task,
-                attemptId,
-                master,
-                `你是主控。审核附带的实际${file.kind === "video" ? "视频抽帧" : "图片"}。产物名称：${file.name}。检查构图、角色和画风一致性、主体错误、字幕可读性（若有）。抽帧只能证明这些时刻，不要声称已看过全视频。选定制作画风：${productionVisualPrompt(store.visualStyle(task.projectId))}。必须区分仙侠三维制作质感与真人写真、实景旅游摄影；风格不符则不通过。任务要求：${feedback}。产物上下文：${JSON.stringify(bundle.data)}。元数据：${file.metadata}。返回 JSON {"pass":boolean,"feedback":"具体问题与原因"}。`,
-                signal,
-                paths,
-              ),
-            ),
+        await this.runtime.reviewBatch(task, master, signal, async (progress, batchSignal) => {
+          const abort = new AbortController();
+          const reviewSignal = AbortSignal.any([batchSignal, abort.signal]);
+          const active = new Map<string, string>();
+          let next = 0;
+          const visualReports: string[] = new Array(visual.length);
+          const worker = async () => {
+            while (next < visual.length && !reviewSignal.aborted) {
+              const index = next++;
+              const file = visual[index];
+              this.assertCurrent(task, reviewSignal);
+              active.set(file.id, file.name);
+              saveReview("visual", `并发审核 ${active.size} 项：${[...active.values()].join("、")}`);
+              try {
+                const paths = await media.files.inspectFrames(file.id, reviewSignal);
+                const report = reviewSchema.parse(
+                  parseResult(
+                    await this.runtime.call(
+                      task,
+                      attemptId,
+                      master,
+                      `你是主控。审核附带的实际${file.kind === "video" ? "视频抽帧" : "图片"}。产物名称：${file.name}。检查构图、角色和画风一致性、主体错误、字幕可读性（若有）。抽帧只能证明这些时刻，不要声称已看过全视频。${visualReviewPrompt(store.visualStyle(task.projectId))}任务要求：${feedback}。产物上下文：${JSON.stringify(bundle.data)}。元数据：${file.metadata}。返回 JSON {"pass":boolean,"feedback":"具体问题与原因"}。`,
+                      reviewSignal,
+                      paths,
+                      progress,
+                    ),
+                  ),
+                );
+                visualReports[index] = `${file.name}：${report.feedback}`;
+                if (!report.pass) passed = false;
+                review.visualDone++;
+                active.delete(file.id);
+                saveReview("visual", active.size ? `并发审核 ${active.size} 项：${[...active.values()].join("、")}` : "本批图片 / 视频检查已完成");
+              } catch (error) {
+                abort.abort();
+                throw error;
+              }
+            }
+          };
+          const results = await Promise.allSettled(
+            Array.from({ length: Math.min(3, visual.length) }, () => worker()),
           );
-          reports.push(`${file.name}：${report.feedback}`);
-          if (!report.pass) passed = false;
-        }
+          const failed = results.find((r) => r.status === "rejected");
+          if (failed?.status === "rejected") throw failed.reason;
+          this.assertCurrent(task, reviewSignal);
+          reports.push(...visualReports);
+        });
+        saveReview("summary", "检查素材完整性、剧本一致性和角色绑定");
         const summary = reviewSchema.parse(
           parseResult(
             await this.runtime.call(
               task,
               attemptId,
               master,
-              `你是主控。审核制作阶段的完整交付及实际媒体检查报告。配音实际转写应与台词一致，漏字错词需指出；不要把转写声称为已确认音色或情绪，音色、语气和口型最终需要用户试听审片。检查素材齐全、剧本一致、分镜顺序和角色绑定。返回 JSON {"pass":boolean,"feedback":"完整审核结论与不确定项"}。\n上游：${JSON.stringify(upstream.map((a) => a.content))}\n交付：${JSON.stringify(bundle)}\n视觉和语音检查：${reports.join("\n")}\n媒体元数据：${JSON.stringify(files.map((f) => ({ name: f.name, metadata: f.metadata })))}\n用户要求：${feedback}`,
+              `你是主控。审核制作阶段的完整交付及实际媒体检查报告。配音实际转写应与台词一致，漏字错词需指出；不要把转写声称为已确认音色或情绪，音色、语气和口型最终需要用户试听审片。检查素材齐全、剧本一致、分镜顺序和角色绑定。定妆与声音归属全剧；voiceBatchAssetIds 仅表示当前优先补齐的角色资产 ID。只要求本批角色对应成长阶段的声音完整，其余已有声音保留，尚待选型或生成不能阻塞本批；试听稿是独立试音，不能要求照抄单集台词。返回 JSON {"pass":boolean,"feedback":"完整审核结论与不确定项"}。\n上游：${JSON.stringify(upstream.map((a) => a.content))}\n交付：${JSON.stringify(bundle)}\n视觉和语音检查：${reports.join("\n")}\n媒体元数据：${JSON.stringify(files.map((f) => ({ name: f.name, metadata: f.metadata })))}\n用户要求：${feedback}`,
               signal,
             ),
           ),
         );
         passed = passed && summary.pass;
+        review.summaryDone = true;
+        saveReview("summary", passed ? "审核通过" : "审核完成，需修改");
         feedback =
           task.instruction +
           "\n" +
@@ -197,7 +337,7 @@ export class MediaPipeline {
     }
   }
   async prepareCharacterContent(task: Task, asset: AssetPlan["assets"][number], assets: AssetPlan["assets"], stylePrompt: string, signal: AbortSignal) {
-    if (asset.kind !== "character" || !(stylePrompt.startsWith("STYLE LOCK —") || stylePrompt.startsWith("SHARED STYLE DNA"))) return;
+    if (asset.kind !== "character" || !(stylePrompt.startsWith("STYLE LOCK —") || isXianxiaLookLock(stylePrompt))) return;
     asset.prompt = migrateLegacyContent(asset.prompt);
     if (asset.promptFormat === "character-content-v1") {
       assertCharacterContent(asset.prompt);
@@ -226,19 +366,26 @@ export class MediaPipeline {
     };
     if (asset.sourceAssetId) {
       const source = assets.find(a => a.id === asset.sourceAssetId);
+      if (asset.kind === "scene" && source?.kind !== "scene") throw Error("场景定妆只能使用场景参考，不能使用人物或道具参考");
       if (!source?.imageId || source.id === asset.id) throw Error(`资产 ${asset.name} 的基础参考未完成或引用自身`);
       add(source.imageId, `the source design for ${asset.sourceUsage || "view"}; preserve its geometry, identity and materials, show only the requested asset or view. Do not independently redesign it.`);
     }
     if (baseImageId) add(baseImageId, "the same asset identity in another state; retain its defining design.");
-    if (style.referenceImageId) add(style.referenceImageId, "production style only: match 3D sculpting and rendering finish; do not copy this subject, face, age, hair color, costume, pose or background into a different asset.");
-    return { ids, notes: notes.length ? `\n\nREFERENCE ROLES\n${notes.join("\n")}` : "" };
+    if (!isUniversalXianxia(style) && style.referenceImageId && !isSeriesMasterLook(asset))
+      add(
+        style.referenceImageId,
+        xianxiaModules(style)
+          ? masterReferenceNote(asset.kind)
+          : "production style only: match the selected visual style, shape language and rendering finish; do not copy this subject, face, age, hair color, costume, pose or background into a different asset.",
+      );
+    return { ids, notes: style.prompt.startsWith("UNIVERSAL XIANXIA STYLE") ? "" : notes.length ? `\n\nREFERENCE ROLES\n${notes.join("\n")}` : "" };
   }
 
   async reviewAssetImage(task: Task, asset: AssetPlan["assets"][number], imageId: string, referenceIds: string[], signal: AbortSignal) {
     const { store, media } = this.runtime;
     const paths = [media.files.get(imageId, task.projectId).path, ...referenceIds.map(id => media.files.get(id, task.projectId).path)];
     return reviewSchema.parse(parseResult(await this.runtime.call(task, crypto.randomUUID(), store.binding("主模型"),
-      `审核实际图片，第一张为候选，后续为生成参考。选定作品画风：${productionVisualPrompt(store.visualStyle(task.projectId))}。资产：${JSON.stringify({name:asset.name,kind:asset.kind,prompt:asset.prompt,identity:asset.identity,state:asset.state,sourceAssetId:asset.sourceAssetId})}。检查主体类型正确、角色/服装或建筑形制符合设定、实际画面是虚构仙侠三维片场（材质写实，世界是设计出来的），不是地球风景摄影、景区实拍或博物馆文物照、参考角色的身份未串入其他资产、全貌可读。任何不符都判失败；不能因为提示词关键词齐全而通过。不确定明确写出。返回 JSON {"pass":boolean,"feedback":"具体画面证据和问题"}。`, signal, paths)));
+      `审核实际图片，第一张为候选，后续为生成参考。${visualReviewPrompt(store.visualStyle(task.projectId))}资产：${JSON.stringify({name:asset.name,kind:asset.kind,prompt:asset.prompt,identity:asset.identity,state:asset.state,sourceAssetId:asset.sourceAssetId})}。检查主体类型正确、角色/服装或建筑形制符合设定、实际画面符合所选画风的造型与渲染、参考角色的身份未串入其他资产、全貌可读。场景与建筑必须完全无人，出现近景人物、远处人影、剪影或人物倒影一律失败；角色逐项核对自己的脸型、发型、服装颜色、轮廓与配饰，不能以统一画风为由接受套用另一角色的造型。任何不符都判失败；不能因为提示词关键词齐全而通过。不确定明确写出。返回 JSON {"pass":boolean,"feedback":"具体画面证据和问题"}。`, signal, paths)));
   }
 
   async retryAsset(task: Task, assetId: string, signal: AbortSignal) {
@@ -247,7 +394,7 @@ export class MediaPipeline {
       throw Error("任务正在执行，请先中断再重试单张定妆");
     const { store, media } = this.runtime;
     const artifact = store.one<Artifact>(
-      "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY createdAt DESC LIMIT 1",
+      "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY rowid DESC LIMIT 1",
       task.id,
       task.revision,
     );
@@ -256,7 +403,7 @@ export class MediaPipeline {
     const data = assetPlanSchema.parse(bundle?.data);
     const asset = data.assets.find((a) => a.id === assetId);
     if (!asset) throw Error("资产不存在");
-    assertCanonicalLooks([asset]);
+    assertCanonicalLooks([asset], store.visualStyle(task.projectId));
     const p = store.project(task.projectId);
     const style = store.visualStyle(task.projectId);
     const library = store.assetLibrary(task.projectId);
@@ -268,7 +415,15 @@ export class MediaPipeline {
         asset.promptFormat !== "prop-content-v1" &&
         asset.promptFormat !== "scene-content-v1")
       await this.prepareCharacterContent(task, asset, data.assets, style.prompt, signal);
-    const refs = this.assetReferences(task, asset, data.assets, base?.imageId);
+    if (
+      xianxiaModules(style) &&
+      !isUniversalXianxia(style) &&
+      !isSeriesMasterLook(asset) &&
+      !style.referenceImageId
+    )
+      throw Error("没有主参考（沈不言定妆）不能入库正式资产");
+    const refs = this.assetReferences(task, asset, data.assets,
+      base?.generationStyleKey === visualStyleKey(style) ? base.imageId : undefined);
     const generationPrompt =
       assetVisualPrompt(style, asset, data.assets) + refs.notes;
     const candidateId = await media.ensure(
@@ -276,7 +431,7 @@ export class MediaPipeline {
       task.revision,
       "image",
       generationPrompt,
-      asset.generationReferenceIds || refs.ids,
+      refs.ids,
       { aspect: p.aspect },
       signal,
       undefined,
@@ -289,15 +444,21 @@ export class MediaPipeline {
         candidateId,
       ]),
     ];
+    asset.candidateSpecs = { ...asset.candidateSpecs, [candidateId]: {
+      prompt: generationPrompt, styleKey: visualStyleKey(style),
+      styleVersion: style.version || style.id, referenceIds: refs.ids,
+    } };
     const next = { type: "assets" as const, data };
     store.publish(task.id, task.revision, JSON.stringify(next, null, 2));
     const report = await this.reviewAssetImage(
       task,
       asset,
       candidateId,
-      asset.generationReferenceIds || refs.ids,
+      refs.ids,
       signal,
     );
+    asset.candidateSpecs[candidateId].passed = report.pass;
+    store.publish(task.id, task.revision, JSON.stringify(next, null, 2));
     store.event(task.projectId, task.id, report.pass ? "review.asset.passed" : "review.asset.failed", `${asset.name}：${report.feedback}`);
     this.assertCurrent(task, signal);
     if (!report.pass)
@@ -313,8 +474,10 @@ export class MediaPipeline {
   async selectAsset(task: Task, assetId: string, imageId: string) {
     if (task.stage !== 3) throw Error("仅定妆资产支持选择候选");
     const { store } = this.runtime;
+    if (store.downstream(task).some(t => ["running", "reviewing", "coordinating"].includes(t.status)))
+      throw Error("下游正在制作，请先中断再选择全剧定妆");
     const artifact = store.one<Artifact>(
-      "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY createdAt DESC LIMIT 1",
+      "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY rowid DESC LIMIT 1",
       task.id,
       task.revision,
     );
@@ -328,20 +491,55 @@ export class MediaPipeline {
       ...(asset.imageId ? [asset.imageId] : []),
     ];
     if (!pool.includes(imageId)) throw Error("只能选择本次抽卡产生的候选图");
+    const spec = asset.candidateSpecs?.[imageId];
+    if (spec?.passed === false) throw Error("这张候选图未通过画风或内容验收，请重新生成");
+    if ((spec?.styleKey || asset.generationStyleKey) !== visualStyleKey(store.visualStyle(task.projectId)))
+      throw Error("候选图属于旧画风，请按当前画风重新生成");
     this.runtime.media.files.get(imageId, task.projectId);
+    if (asset.imageId === imageId) return { type: "assets" as const, data };
     asset.imageId = imageId;
     asset.selectedCandidateId = imageId;
     delete asset.libraryId;
+    if (spec) {
+      asset.generationPrompt = spec.prompt;
+      asset.generationStyleKey = spec.styleKey;
+      asset.generationStyleVersion = spec.styleVersion;
+      asset.generationReferenceIds = spec.referenceIds;
+    }
     const next = { type: "assets" as const, data };
+    store.db.run("UPDATE artifacts SET status='superseded' WHERE taskId=? AND revision=? AND status IN ('approved','reviewed')", [task.id, task.revision]);
+    store.invalidateAfter(task);
+    store.updateTask(task.id, task.revision, "paused");
     store.publish(task.id, task.revision, JSON.stringify(next, null, 2));
     store.event(
       task.projectId,
       task.id,
       "media.select",
-      `${asset.name} 已选定正式定妆。`,
+      `${asset.name} 已选中候选，重新审核确认后作为全剧定妆；相关关键帧和视频已标为待更新。`,
     );
     return next;
   }
+  /** Scheduling scope only: the asset and voice libraries remain series-wide. */
+  voiceBatchAssets(task: Task, data: AssetPlan) {
+    const { store } = this.runtime;
+    const tasks = store.tasks(task.projectId);
+    const episodes = tasks.filter(t => t.stage === 6).sort((a, b) => (a.episode || 1) - (b.episode || 1));
+    const episode = (episodes.find(t => t.status !== "approved") || episodes.at(-1))?.episode || 1;
+    const scriptTask = tasks.find(t => t.stage === 2 && t.episode === episode);
+    const script = scriptTask && store.one<Artifact>(
+      "SELECT * FROM artifacts WHERE taskId=? AND revision=? AND status='approved' ORDER BY createdAt DESC LIMIT 1",
+      scriptTask.id, scriptTask.revision,
+    );
+    const manifest = script && timingManifest(script.content)?.episodes.find(e => e.id === `EP${String(episode).padStart(3, "0")}`);
+    if (!manifest) return [];
+    const speakers = new Set(manifest.beats.flatMap(b => b.performance?.dialogue || [])
+      .filter(d => d.text.trim()).map(d => d.speaker.trim()));
+    const registry = store.lookRegistry(task.projectId);
+    const required = registry ? requiredLooksForBeats(registry, manifest.sourceStepIds || [], episode === 1) : null;
+    return data.assets.filter(a => a.kind === "character" && speakers.has(a.name) &&
+      (!required || required.some(r => r.id === a.id)));
+  }
+
   async retryVoices(
     task: Task,
     character: string | undefined,
@@ -355,7 +553,7 @@ export class MediaPipeline {
     if (store.downstream(task).some((t) => this.runtime.active.has(t.id)))
       throw Error("下游正在制作，请先中断再修改角色声音");
     const artifact = store.one<Artifact>(
-      "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY createdAt DESC LIMIT 1",
+      "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY rowid DESC LIMIT 1",
       task.id,
       task.revision,
     );
@@ -363,15 +561,12 @@ export class MediaPipeline {
     if (!bundle || bundle.type !== "assets")
       throw Error("尚无角色资产方案，请先生成定妆方案");
     const data = assetPlanSchema.parse(bundle.data);
-    const characters = [
-      ...new Set([
-        ...data.assets.filter((a) => a.kind === "character").map((a) => a.name),
-        ...data.voices.map((v) => v.character),
-      ]),
-    ];
-    const targets = character
-      ? characters.filter((name) => name === character)
-      : characters;
+    const batchAssets = character
+      ? data.assets.filter(a => a.kind === "character" && a.name === character)
+      : this.voiceBatchAssets(task, data);
+    data.voiceBatchAssetIds = batchAssets.map(a => a.id);
+    const targets = [...new Set(batchAssets.map(a => a.name))];
+    const inBatch = (v: AssetPlan["voices"][number]) => batchAssets.some(a => a.name === v.character && (a.growthStage || "") === (v.growthStage || ""));
     if (!targets.length) throw Error("没有可生成试听的角色");
     const connection = media.connection("speech");
     let voices =
@@ -395,25 +590,24 @@ export class MediaPipeline {
         sample.status === "ready" &&
         sample.voicePortrait &&
         sample.sampleText &&
-        sample.instructions
+        sample.instructions &&
+        hasCurrentVoicePolicy(sample)
       );
     if (connection.provider === "qwen-tts") {
       const toWrite = targets.filter((name) => {
-        const sample = data.voices.find((v) => v.character === name);
-        if (sample?.status === "not_required") return false;
-        return rewritePortrait || !sample || !completeCard(sample);
+        const assets = batchAssets.filter((a) => a.name === name);
+        return rewritePortrait || assets.some((asset) => !data.voices.some(
+          (sample) => sample.character === name &&
+            (sample.growthStage || "") === (asset.growthStage || "") &&
+            completeCard(sample),
+        ));
       });
       if (toWrite.length) {
-        const shotPlan = store
-          .upstream(task)
-          .map((a) => mediaBundle(a.content))
-          .find((b) => b?.type === "shot-plan");
-        if (!shotPlan) throw Error("缺少已确认文字分镜，不能编造角色试听台词");
-        const shots = storyboardSchema.parse(shotPlan.data).shots;
+        const shots: Storyboard["shots"] = [];
         const design = connection.model.includes("VoiceDesign");
         if (rewritePortrait)
           data.voices = data.voices.filter(
-            (v) => !toWrite.includes(v.character),
+            (v) => !inBatch(v),
           );
         const bound = rewritePortrait
           ? []
@@ -430,7 +624,7 @@ export class MediaPipeline {
                   ),
               );
         const filled = await fillMissingVoiceCards(
-          castQwenVoices(data, shots, toWrite, design, bound, borrow),
+          castQwenVoices({ ...data, assets: batchAssets }, shots, toWrite, design, bound, borrow),
           data.assets,
           shots,
           storyBible(store.upstream(task)),
@@ -445,50 +639,41 @@ export class MediaPipeline {
               ),
             ),
         );
-        data.voices = [
-          ...data.voices.filter((v) => !toWrite.includes(v.character)),
-          ...filled,
-        ];
+        data.voices = mergeVoiceCards(data.voices, filled);
       }
       if (!rewritePortrait)
         data.voices = data.voices.map((sample) => {
-          if (!targets.includes(sample.character) || !completeCard(sample))
+          if (!inBatch(sample) || !completeCard(sample))
             return sample;
           const { audioId: _dropped, ...kept } = sample;
           return kept;
         });
     }
-    for (const name of targets) {
-      if (!data.voices.some((v) => v.character === name)) {
-        if (connection.provider === "qwen-tts")
-          throw Error(`角色 ${name} 没有可生成的声音画像`);
-        data.voices.push({
-          character: name,
-          voice: voices[0],
-          sampleText: (() => {
-            const plan = store
-              .upstream(task)
-              .map((a) => mediaBundle(a.content))
-              .find((b) => b?.type === "shot-plan");
-            const line =
-              plan &&
-              storyboardSchema
-                .parse(plan.data)
-                .shots.find((s) => s.speaker === name && s.dialogue.trim())
-                ?.dialogue;
-            if (!line)
-              throw Error(`角色 ${name} 没有已确认台词，不能编造试听内容`);
-            return line;
-          })(),
-          instructions: "",
-          castingNote: "",
-          status: "ready",
-          voiceIdentityKey: "",
-        });
+    if (connection.provider !== "qwen-tts") {
+      const missing = batchAssets.filter((asset) => asset.kind === "character" &&
+        targets.includes(asset.name) && (rewritePortrait || !data.voices.some(
+          (sample) => sample.character === asset.name &&
+            (sample.growthStage || "") === (asset.growthStage || "") &&
+            sample.status === "ready" && sample.sampleText.trim(),
+        )));
+      if (missing.length) {
+        const plan = assetPlanSchema.pick({ voices: true }).parse(parseResult(
+          await this.runtime.call(task, crypto.randomUUID(), store.binding("文本模型"),
+            `${seriesVoiceDna}\n你是全剧配音设计。根据以下全剧角色及成长阶段的稳定身份各生成一份独立试听稿，不依赖任何单集分镜台词。只从可用 voice ID ${JSON.stringify(voices)} 中选择。返回 JSON {"voices":[{"character":"角色原名","growthStage":"资产原成长阶段","voice":"可用ID","sampleText":"符合该角色口吻的独立试听稿"}]}。角色资产：${JSON.stringify(missing)}。全剧设定：${storyBible(store.upstream(task))}`,
+            signal),
+        ));
+        for (const asset of missing) {
+          const sample = plan.voices.find((v) => v.character === asset.name &&
+            (v.growthStage || "") === (asset.growthStage || "") && v.sampleText.trim());
+          if (!sample) throw Error(`角色 ${asset.name}（${asset.growthStage || "默认阶段"}）缺少试听稿`);
+          data.voices = data.voices.filter((v) => !(v.character === asset.name &&
+            (v.growthStage || "") === (asset.growthStage || "")));
+          data.voices.push({ ...sample, status: "ready", audioId: undefined });
+        }
       }
     }
     const selected = data.voices.filter(
-      (v) => targets.includes(v.character) && v.status === "ready",
+      (v) => inBatch(v) && v.status === "ready",
     );
     this.assertCurrent(task, signal);
     store.updateTask(task.id, task.revision, "running", "正在生成角色声音试听");
@@ -549,7 +734,7 @@ export class MediaPipeline {
         task.projectId,
         task.id,
         "media.voice",
-        `已完成 ${selected.length} 个声音试听；无台词角色不配音，不匹配的声线等待处理。定妆图保持不变`,
+        `已完成 ${selected.length} 个声音试听；全剧角色按成长阶段保持一致声线，不匹配的声线等待处理。定妆图保持不变`,
       );
       return { type: "assets", data };
     } catch (error) {
@@ -581,9 +766,14 @@ export class MediaPipeline {
     checkpoint?: (type: string, data: any) => void,
   ) {
     const { store, media } = this.runtime,
-      p = store.project(task.projectId),
-      style = store.visualStyle(task.projectId);
+      p = store.project(task.projectId);
+    let style = store.visualStyle(task.projectId);
     const rules = store.productionRules(p.id);
+    const visualOptions = {
+      aspect: p.aspect,
+      visualStyleKey: visualStyleKey(style),
+      visualRevision: store.settings(p.id).visualRevision || 0,
+    };
     const episode = upstream
       .map((a) =>
         store.task(a.taskId).stage === 2
@@ -636,26 +826,68 @@ export class MediaPipeline {
         parseResult(
           await this.runtime.call(task, attemptId, text, prompt, signal),
         );
-      const data: AssetPlan = assetPlanSchema.parse(
-        edited?.type === "assets"
-          ? edited.data
-          : await lookAsk(
-              assetLookAgentPrompt(
-                style.prompt,
-                JSON.stringify(library),
-                JSON.stringify(registry || { entities: [] }),
-              ) +
-                "同一场景的局部和另一视角不要单独建资产，写在分镜 camera。换装用 variantKind=costume，破败用 form，成长阶段用 growth。禁止把同一地点多个镜头独立设计成不同地点。本集分镜点到的实体变体必须提供。",
-            ),
+      const approvedAt = (stage: number) => {
+        const found = store.tasks(task.projectId).find((item) => item.stage === stage);
+        return found
+          ? store.one<Artifact>(
+              "SELECT * FROM artifacts WHERE taskId=? AND revision=? AND status='approved' ORDER BY createdAt DESC LIMIT 1",
+              found.id,
+              found.revision,
+            )
+          : null;
+      };
+      const story = (() => {
+        const art = approvedAt(7);
+        return art ? structured(art.content, storySchema) : null;
+      })();
+      const plan = (() => {
+        const art = approvedAt(1);
+        if (!art) return null;
+        try {
+          return seriesPlanSchema.parse(JSON.parse(art.content));
+        } catch {
+          return null;
+        }
+      })();
+      const existing =
+        edited?.type === "assets" && Array.isArray(edited.data?.assets)
+          ? edited.data.assets
+          : [];
+      const batch = nextIncompleteLookEpisode(
+        registry,
+        plan,
+        story,
+        existing.map((asset: { id: string }) => asset.id),
       );
-      const shotPlan = bundleAt("shot-plan");
-      const shotIds = shotPlan?.shots.flatMap((s: any) => s.assetIds as string[]) || [];
-      data.assets = collapseLocationLooks(data.assets);
-      data.assets = attachShotLookViews(data.assets, shotIds);
-      assertCanonicalLooks(data.assets);
-      for (const id of shotIds)
-        if (!data.assets.some((a) => a.id === id))
-          throw Error(`制作验收：文字分镜需要的资产 ${id} 未提供`);
+      const complete =
+        existing.length > 0 &&
+        batch.required.every((look) =>
+          existing.some((asset: { id: string }) => asset.id === look.id),
+        );
+      const planned = complete
+        ? edited.data
+        : await lookAsk(
+            assetLookAgentPrompt(
+              style.prompt,
+              JSON.stringify(
+                library.filter(
+                  (a) => a.generationStyleKey === visualStyleKey(style),
+                ),
+              ),
+              JSON.stringify(registry || { entities: [] }),
+            ) +
+              `同一场景的局部和另一视角不要单独建资产。换装用 variantKind=costume，破败用 form，成长阶段用 growth。按集增量出定妆，全剧共用同一份资产表：已有资产保留，不重画；本批是第 ${batch.episode} 集。本批必须提供：${batch.required.map((look) => look.id).join("、") || "无新项"}。后集才出现的换装、破败、成长变体不要现在出图。完整故事：${JSON.stringify(upstream.filter((a) => store.task(a.taskId).stage === 7).map((a) => a.content))}`,
+          );
+      const data: AssetPlan = assetPlanSchema.parse({
+        ...planned,
+        assets: collapseLocationLooks(
+          mergeLookAssets<AssetPlan["assets"][number]>(existing, planned.assets || []),
+        ),
+      });
+      assertCanonicalLooks(data.assets, style);
+      for (const look of batch.required)
+        if (!data.assets.some((asset) => asset.id === look.id && asset.kind === look.kind))
+          throw Error(`制作验收：本集定妆 ${look.id} 未提供`);
       saveProgress("assets", data);
       const ordered: typeof data.assets = [];
       const pending = new Set<string>();
@@ -672,7 +904,20 @@ export class MediaPipeline {
         pending.delete(asset.id); visited.add(asset.id); ordered.push(asset);
       };
       data.assets.forEach(visit);
-      for (const asset of ordered) {
+      ordered.sort(
+        (a, b) =>
+          (isSeriesMasterLook(a) ? 0 : 1) - (isSeriesMasterLook(b) ? 0 : 1),
+      );
+      store.event(
+        task.projectId,
+        task.id,
+        "media.looks",
+        isUniversalXianxia(style)
+          ? `定妆按最多 ${lookImageConcurrency} 路并发生图；角色各用自己的造型，场景严格无人。`
+          : `定妆按最多 ${lookImageConcurrency} 路并发生图；沈不言主参考先出，其余并行。`,
+      );
+      let contentTurn = Promise.resolve();
+      await runLookImagePool(ordered, signal, async (asset, workSignal) => {
         const base = asset.baseLibraryId
           ? library.find((a) => a.libraryId === asset.baseLibraryId)
           : undefined;
@@ -688,8 +933,12 @@ export class MediaPipeline {
           )
             throw Error("制作验收：复用资产的身份或状态已改变，请创建新版本");
           asset.imageId = saved.imageId;
+          asset.generationPrompt = saved.generationPrompt;
+          asset.generationStyleVersion = saved.generationStyleVersion;
+          asset.generationStyleKey = saved.generationStyleKey;
+          asset.generationReferenceIds = saved.generationReferenceIds;
         }
-        this.assertCurrent(task, signal);
+        this.assertCurrent(task, workSignal);
         if (asset.sourceUsage === "view") {
           const source = data.assets.find((a) => a.id === asset.sourceAssetId);
           if (!source?.imageId)
@@ -697,19 +946,60 @@ export class MediaPipeline {
           asset.imageId = source.imageId;
           asset.generationPrompt = source.generationPrompt;
           asset.generationStyleVersion = source.generationStyleVersion;
+          asset.generationStyleKey = source.generationStyleKey;
           asset.generationReferenceIds = source.generationReferenceIds;
           asset.candidates = source.candidates;
           asset.selectedCandidateId = source.selectedCandidateId;
           saveProgress("assets", data);
-          continue;
+          return;
         }
-        await this.prepareCharacterContent(task, asset, data.assets, style.prompt, signal);
-        const refs = this.assetReferences(task, asset, data.assets, base?.imageId);
-        const generationPrompt = assetVisualPrompt(style, asset, data.assets) + refs.notes;
-        if ((style.prompt.startsWith("STYLE LOCK —") || style.prompt.startsWith("SHARED STYLE DNA")) &&
-            (asset.generationPrompt !== generationPrompt || JSON.stringify(asset.generationReferenceIds || []) !== JSON.stringify(refs.ids))) {
+        const previousContent = contentTurn;
+        let releaseContent!: () => void;
+        contentTurn = new Promise<void>((resolve) => {
+          releaseContent = resolve;
+        });
+        await previousContent;
+        try {
+          await this.prepareCharacterContent(
+            task,
+            asset,
+            data.assets,
+            store.visualStyle(task.projectId).prompt,
+            workSignal,
+          );
+        } finally {
+          releaseContent();
+        }
+        style = store.visualStyle(task.projectId);
+        const xianxia = !!xianxiaModules(style);
+        if (
+          xianxia &&
+          !isUniversalXianxia(style) &&
+          !isSeriesMasterLook(asset) &&
+          !style.referenceImageId
+        )
+          throw Error("没有主参考（沈不言定妆）不能入库正式资产");
+        const refs = this.assetReferences(
+          task,
+          asset,
+          data.assets,
+          base?.generationStyleKey === visualStyleKey(style)
+            ? base.imageId
+            : undefined,
+        );
+        const generationPrompt =
+          assetVisualPrompt(style, asset, data.assets) + refs.notes;
+        if (
+          asset.generationStyleKey !== visualStyleKey(style) ||
+          asset.generationPrompt !== generationPrompt ||
+          JSON.stringify(asset.generationReferenceIds || []) !==
+            JSON.stringify(refs.ids)
+        ) {
           delete asset.imageId;
           delete asset.libraryId;
+          delete asset.candidates;
+          delete asset.candidateSpecs;
+          delete asset.selectedCandidateId;
         }
         if (!asset.imageId) {
           asset.imageId = await media.ensure(
@@ -718,21 +1008,30 @@ export class MediaPipeline {
             "image",
             generationPrompt,
             refs.ids,
-            { aspect: p.aspect },
-            signal,
+            visualOptions,
+            workSignal,
           );
           asset.generationReferenceIds = refs.ids;
           asset.generationPrompt = generationPrompt;
           asset.generationStyleVersion = style.version || style.id;
+          asset.generationStyleKey = visualStyleKey(style);
           asset.candidates = [asset.imageId];
           asset.selectedCandidateId = asset.imageId;
         }
+        if (xianxia && !isUniversalXianxia(style) && isSeriesMasterLook(asset) && asset.imageId) {
+          store.bindMasterLookRef(task.projectId, asset.imageId);
+          style = store.visualStyle(task.projectId);
+          asset.generationStyleKey = visualStyleKey(style);
+          visualOptions.visualStyleKey = visualStyleKey(style);
+        }
         saveProgress("assets", data);
-      }
-      if (
-        !data.assets.some((asset) => asset.kind === "character") &&
-        !data.voices.length
-      )
+      });
+      const batchVoiceAssets = this.voiceBatchAssets(task, data);
+      data.voiceBatchAssetIds = batchVoiceAssets.map(a => a.id);
+      saveProgress("assets", data);
+      const inVoiceBatch = (sample: AssetPlan["voices"][number]) => batchVoiceAssets.some(a =>
+        a.name === sample.character && (a.growthStage || "") === (sample.growthStage || ""));
+      if (!batchVoiceAssets.length)
         return { type: "assets", data };
       let voice: Connection;
       try {
@@ -766,51 +1065,64 @@ export class MediaPipeline {
               (s) => s.character === v.character && s.audioId === v.audioId,
             ),
         );
-      if (!data.voices.length && voice.provider !== "qwen-tts") {
-        const plan = await ask(
-          `你是配音 Agent。为以下角色各提供 2 个不同声音的试听候选（不足则 1 个），仅从可用 voice ID ${JSON.stringify(voices.slice(0, 30))} 中选择。返回 JSON {"voices":[{"character":"角色名字","voice":"可用ID","sampleText":"该角色一句适合试听的台词"}]}。角色：${JSON.stringify(data.assets.filter((asset) => asset.kind === "character"))}`,
+      const missingVoiceAssets = batchVoiceAssets.filter((asset) => asset.kind === "character" &&
+        !data.voices.some((sample) => sample.character === asset.name &&
+          (sample.growthStage || "") === (asset.growthStage || "") &&
+          sample.status === "ready" && sample.sampleText.trim()));
+      if (missingVoiceAssets.length && voice.provider !== "qwen-tts") {
+        const plan = await lookAsk(
+          `${seriesVoiceDna}\n你是配音 Agent。根据全剧稳定身份，为以下角色的每个成长阶段各提供 2 个不同声音的试听候选（不足则 1 个），不依赖任何单集分镜，仅从可用 voice ID ${JSON.stringify(voices.slice(0, 30))} 中选择。返回 JSON {"voices":[{"character":"角色名字","growthStage":"资产原成长阶段","voice":"可用ID","sampleText":"符合稳定身份的独立试听稿"}]}。角色：${JSON.stringify(missingVoiceAssets)}。全剧设定：${storyBible(upstream)}`,
         );
-        data.voices = assetPlanSchema.pick({ voices: true }).parse(plan).voices;
-        if (!data.voices.length) throw Error("制作验收：角色声音试听方案为空");
+        const plannedVoices = assetPlanSchema.pick({ voices: true }).parse(plan).voices;
+        for (const asset of missingVoiceAssets) {
+          if (!plannedVoices.some((sample) => sample.character === asset.name &&
+            (sample.growthStage || "") === (asset.growthStage || "") && sample.sampleText.trim()))
+            throw Error(`制作验收：角色 ${asset.name}（${asset.growthStage || "默认阶段"}）声音试听方案为空`);
+        }
+        data.voices = [...data.voices.filter((sample) => !missingVoiceAssets.some((asset) =>
+          asset.name === sample.character && (asset.growthStage || "") === (sample.growthStage || ""))),
+          ...plannedVoices];
         saveProgress("assets", data);
       }
       const selectedCharacters = new Set<string>();
       data.voices = data.voices.filter((sample) => {
         const saved = approvedVoices.find(
-          (v) => v.character === sample.character,
+          (v) => v.character === sample.character &&
+            (v.growthStage || "") === (sample.growthStage || ""),
         );
         if (!saved) return true;
-        if (selectedCharacters.has(sample.character)) return false;
-        selectedCharacters.add(sample.character);
+        const identity = JSON.stringify([sample.character, sample.growthStage || ""]);
+        if (selectedCharacters.has(identity)) return false;
+        selectedCharacters.add(identity);
         Object.assign(sample, saved);
         return true;
       });
       if (voice.provider === "qwen-tts") {
-        const plan = storyboardSchema.parse(bundleAt("shot-plan"));
         const design = voice.model.includes("VoiceDesign");
-        data.voices = await fillMissingVoiceCards(
+        const filled = await fillMissingVoiceCards(
           castQwenVoices(
-            data,
-            plan.shots,
+            { ...data, assets: batchVoiceAssets },
+            [],
             undefined,
             design,
             approvedVoices,
             borrowedVoices,
           ),
           data.assets,
-          plan.shots,
+          [],
           storyBible(upstream),
-          ask,
+          lookAsk,
         );
+        data.voices = mergeVoiceCards(data.voices, filled);
         saveProgress("assets", data);
-        const missing = data.voices.filter((v) => v.status === "needs_voice");
+        const missing = data.voices.filter((v) => inVoiceBatch(v) && v.status === "needs_voice");
         if (missing.length)
           throw Error(
             `制作验收：角色声音待选型：${missing.map((v) => v.character + "：" + v.castingNote).join("；")}`,
           );
       }
       for (const sample of data.voices) {
-        if (sample.status === "not_required") continue;
+        if (!inVoiceBatch(sample) || sample.status === "not_required") continue;
         this.assertCurrent(task, signal);
         if (!voices.includes(sample.voice))
           throw Error(`声音 ${sample.voice} 不在供应商可用列表中`);
@@ -829,10 +1141,19 @@ export class MediaPipeline {
       return { type: "assets", data };
     }
     const assets = assetPlanSchema.parse(bundleAt("assets"));
+    if (assets.assets.some(a => a.generationStyleKey && a.generationStyleKey !== visualStyleKey(style)))
+      throw Error("全剧定妆尚未按当前画风生成并确认，请先完成定妆");
+    const resetShotStyle = (shot: Storyboard["shots"][number]) => {
+      if (shot.generationStyleKey !== visualStyleKey(style)) {
+        delete shot.imageId;
+        delete shot.videoId;
+        delete shot.sourceAudioId;
+        shot.draftImage = false;
+      }
+      shot.generationStyleKey = visualStyleKey(style);
+    };
     const speechOptions = (shot: Storyboard["shots"][number]) => {
-      const selected = assets.voices.find(
-        (v) => v.character === shot.speaker && v.status === "ready",
-      );
+      const selected = pickShotVoice(assets, shot);
       if (media.connection("speech").provider === "qwen-tts" && !selected)
         throw Error(`制作验收：${shot.speaker} 缺少已选定的合适声线`);
       if (
@@ -869,6 +1190,7 @@ export class MediaPipeline {
       saveProgress("storyboard", data);
       for (const shot of data.shots) {
         this.assertCurrent(task, signal);
+        resetShotStyle(shot);
         const refs = shot.assetIds.map((id) => {
           const a = assets.assets.find((a) => a.id === id);
           if (!a?.imageId) throw Error(`镜头引用的资产 ${id} 不存在`);
@@ -885,7 +1207,7 @@ export class MediaPipeline {
             "image",
             `${productionVisualPrompt(style)}。严格依据参考资产保持人物外观。${shot.imagePrompt || shot.prompt}。${shot.camera}。起始状态：${shot.startState}`,
             refs,
-            { aspect: p.aspect },
+            visualOptions,
             signal,
           );
         if (shot.dialogue && !shot.audioId) {
@@ -928,6 +1250,7 @@ export class MediaPipeline {
       const video = media.connection("video");
       for (const shot of data.shots) {
         this.assertCurrent(task, signal);
+        resetShotStyle(shot);
         if (shot.draftImage) {
           delete shot.imageId;
           delete shot.videoId;
@@ -950,7 +1273,7 @@ export class MediaPipeline {
               "image",
               `${productionVisualPrompt(style)}。${shot.imagePrompt || shot.prompt}。${shot.camera}。${shot.startState}。局部修订：${imageFeedback}`,
               refs,
-              { aspect: p.aspect },
+              visualOptions,
               signal,
             );
             saveProgress("production", data);
@@ -1055,7 +1378,7 @@ export class MediaPipeline {
               `${prompt}。这是连续镜头的第 ${n + 1}/${count} 段，保持相同人物、场景和运动方向，不要重复开场动作。`,
               [reference],
               {
-                aspect: p.aspect,
+                ...visualOptions,
                 duration,
                 ...(withAudio ? { generateAudio: true } : {}),
               },
@@ -1081,7 +1404,7 @@ export class MediaPipeline {
             prompt,
             [shot.imageId!],
             {
-              aspect: p.aspect,
+              ...visualOptions,
               duration: shot.duration,
               ...(withAudio ? { generateAudio: true } : {}),
             },
@@ -1126,6 +1449,17 @@ export class MediaPipeline {
             )) as Record<string, unknown>),
           },
     );
+    if (edited?.type === "timeline") {
+      data.shots = data.shots.map(shot => {
+        if (shot.generationStyleKey === visualStyleKey(style)) return shot;
+        const current = production.shots.find(s => s.id === shot.id);
+        if (!current?.videoId || current.generationStyleKey !== visualStyleKey(style))
+          throw Error(`镜头 ${shot.id} 尚未按当前画风生成，请先完成正式镜头`);
+        return { ...shot, imageId: current.imageId, videoId: current.videoId,
+          sourceAudioId: current.sourceAudioId, audioId: current.audioId,
+          draftImage: false, generationStyleKey: current.generationStyleKey };
+      });
+    }
     checkShots(data.shots);
     saveProgress("timeline", data);
     if (

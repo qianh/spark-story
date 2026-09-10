@@ -1,3 +1,4 @@
+import { voiceInBatch } from "../../packages/media";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownContent } from "./MarkdownContent";
@@ -5,6 +6,7 @@ import {
   ArrowDownToLine,
   ArrowUp,
   ArrowDown,
+  FileText,
   Film,
   Image,
   Maximize2,
@@ -26,7 +28,7 @@ import {
   type MediaFile,
   type MediaJob,
 } from "../../packages/media";
-import type { Task } from "../../packages/domain";
+import type { Artifact, Task } from "../../packages/domain";
 import type { ProductionRules } from "../../packages/production";
 const mediaUrl = (id: string) => "/api/media/files/" + id;
 function mediaDuration(file?: MediaFile) {
@@ -244,7 +246,7 @@ export function MediaLibrary({
     if (!selected.length) return;
     if (
       !confirm(
-        `删除选中的 ${selected.length} 个素材？若当前定妆只引用这些文件，本版候选会一并清掉，以便重新执行。`,
+        `删除选中的 ${selected.length} 个素材？产物里的引用会去掉；若某份定妆候选只剩下这些文件，候选记录也会清掉。`,
       )
     )
       return;
@@ -349,6 +351,115 @@ export function MediaLibrary({
           生成或导入图片、视频、配音、音乐后，实际文件会显示在这里。
         </p>
       )}
+    </section>
+  );
+}
+export function ArtifactLibrary({
+  artifacts,
+  tasks,
+  projectId,
+  act,
+  onUpdated,
+  onOpen,
+}: {
+  artifacts: Artifact[];
+  tasks: Task[];
+  projectId: string;
+  act: (fn: () => Promise<unknown>) => void;
+  onUpdated: () => void;
+  onOpen: (artifact: Artifact) => void;
+}) {
+  const [selected, setSelected] = useState<string[]>([]);
+  const toggle = (id: string) =>
+    setSelected((cur) =>
+      cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id],
+    );
+  const removeSelected = async () => {
+    if (!selected.length) return;
+    if (
+      !confirm(
+        `删除选中的 ${selected.length} 个产物记录？媒体文件仍留在素材库。`,
+      )
+    )
+      return;
+    const r = await fetch(`/api/projects/${projectId}/artifacts`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: selected }),
+    });
+    if (!r.ok) throw Error((await r.json()).error);
+    setSelected([]);
+    onUpdated();
+  };
+  if (!artifacts.length) return null;
+  return (
+    <section className="asset-library">
+      <div className="section-heading">
+        <h2>
+          产物记录 <span>{artifacts.length}</span>
+        </h2>
+        <div className="media-library-actions">
+          <button
+            className="text-button"
+            onClick={() =>
+              setSelected(
+                selected.length === artifacts.length
+                  ? []
+                  : artifacts.map((a) => a.id),
+              )
+            }
+          >
+            {selected.length === artifacts.length ? "取消全选" : "全选"}
+          </button>
+          <button
+            className="button secondary"
+            disabled={!selected.length}
+            onClick={() => act(() => removeSelected())}
+          >
+            <Trash2 size={14} />
+            批量删除{selected.length ? ` ${selected.length}` : ""}
+          </button>
+        </div>
+      </div>
+      <div className="asset-grid">
+        {artifacts.map((a) => {
+          const title = tasks.find((t) => t.id === a.taskId)?.title || "产物";
+          return (
+            <div
+              className={
+                "panel asset-card" + (selected.includes(a.id) ? " selected" : "")
+              }
+              key={a.id}
+            >
+              <button
+                type="button"
+                className="asset-card-open"
+                onClick={() => onOpen(a)}
+              >
+                <div className="document-thumb">
+                  <FileText size={32} />
+                  <p>{a.content.slice(0, 160)}</p>
+                </div>
+                <h3>{title}</h3>
+              </button>
+              <label className="asset-card-meta">
+                <input
+                  type="checkbox"
+                  checked={selected.includes(a.id)}
+                  onChange={() => toggle(a.id)}
+                  aria-label={"选择 " + title + " 修订 " + a.revision}
+                />
+                <span>
+                  修订 {a.revision}{" "}
+                  <span className="tag">
+                    {a.status === "approved" ? "正式版" : "候选版"}
+                  </span>
+                </span>
+              </label>
+            </div>
+          );
+        })}
+      </div>
     </section>
   );
 }
@@ -627,6 +738,7 @@ export function BundleView({
       )}
       {bundle.type === "assets" ? (
         <>
+          <p className="muted">全剧共享定妆：先出当前集用到的角色、场景与道具；后集新变体再补。所有集引用同一份已确认版本。</p>
           <div className="bundle-asset-grid">
             {lookSheetAssets(data.assets).map((asset: any) => {
               const i = data.assets.findIndex((row: any) => row.id === asset.id);
@@ -709,6 +821,7 @@ export function BundleView({
             })}
           </div>
           <h3 className="section-heading">角色声音试听</h3>
+          <p className="muted">声音归属全剧，按当前制作需要优先补齐，后续各集复用；其他角色的已有声音保留。</p>
           {onRetryVoices && (
             <button
               className="button secondary compact"
@@ -727,13 +840,11 @@ export function BundleView({
               }
             >
               <RefreshCw size={13} />
-              {busy
-                ? "处理中…"
-                : data.voices.some(
-                      (v: any) => v.status === "ready" && !v.voicePortrait,
-                    ) || !data.voices.length
-                  ? "全部生成声音画像"
-                  : "全部再听一条"}
+              {data.voices.some(
+                (v: any) => v.status === "ready" && !v.voicePortrait,
+              ) || !data.voices.length
+                ? "当前批次生成声音画像"
+                : "当前批次再听一条"}
             </button>
           )}
           {!data.voices.length && (
@@ -769,8 +880,10 @@ export function BundleView({
               <div>
                 <strong>{voice.character}</strong>
                 <small>
-                  {voice.status === "not_required"
-                    ? "本集无台词，无需说话试听"
+                  {!voiceInBatch(data, voice)
+                    ? (voice.audioId ? "全剧已保存，后续复用" : "后续按需补齐")
+                    : voice.status === "not_required"
+                    ? "暂不需要生成，后续按需补齐"
                     : voice.status === "needs_voice"
                       ? "需要匹配声线"
                       : voice.voice}
@@ -782,7 +895,7 @@ export function BundleView({
               {voice.status === "ready" && voice.sampleText && (
                 <p className="voice-sample">{voice.sampleText}</p>
               )}
-              {voice.castingNote && (
+              {voice.castingNote && voiceInBatch(data, voice) && (
                 <p className="muted">{voice.castingNote}</p>
               )}
               {voice.status === "ready" && (

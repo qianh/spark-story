@@ -27,6 +27,8 @@ export function TaskActivity({
     seconds = elapsed(p?.startedAt || task.updatedAt, now);
   const reviewing = task.status === "reviewing",
     coordinating = task.status === "coordinating";
+  const review = reviewing ? p?.review : undefined;
+  const reviewSeconds = review ? elapsed(review.startedAt, now) : 0;
   const noHeartbeat =
     p?.status === "running" && elapsed(p.heartbeatAt, now) > 15;
   const title = reviewing
@@ -45,7 +47,8 @@ export function TaskActivity({
         </span>
         <span className="activity-clock">
           <Clock3 size={14} />
-          本次调用已耗时 {Math.floor(seconds / 60)} 分 {seconds % 60} 秒
+          {review && `审核累计 ${Math.floor(reviewSeconds / 60)} 分 ${reviewSeconds % 60} 秒 · `}
+          {review?.step === "visual" ? "本批审核已耗时" : "本次调用已耗时"} {Math.floor(seconds / 60)} 分 {seconds % 60} 秒
         </span>
       </div>
       <div className="activity-steps" aria-label="当前执行步骤">
@@ -77,13 +80,30 @@ export function TaskActivity({
           : noHeartbeat
             ? "执行心跳暂未更新，无法确认后台是否仍在响应；可检查运行记录。"
             : reviewing
-              ? "正在检查完整性、人物动机和故事一致性。你可以先阅读下方候选稿，审核通过后再确认。"
+              ? review
+                ? "正在检查声音转写、实际画面和交付完整性。音色与语气仍需你试听确认。"
+                : "正在检查完整性、人物动机和故事一致性。你可以先阅读下方候选稿，审核通过后再确认。"
               : coordinating
                 ? "正在分析你的要求；明确的修改会继续执行，方向不明确时会请你确认。"
                 : p?.outputAt
                   ? `最近一次模型正文返回在 ${elapsed(p.outputAt, now)} 秒前。`
                   : "部分模型会先处理较长时间才返回正文；尚未收到内容，不代表已经完成。"}
       </p>
+      {review && (
+        <div aria-label="媒体审核进度" aria-live="polite">
+          <p>
+            声音转写 {review.speechDone} / {review.speechTotal} 项
+            {review.speechTotal === 0 ? "（无需转写）" : "已完成"}
+            {" · "}图片 / 视频审核 {review.visualDone} / {review.visualTotal} 项已完成
+            {" · "}汇总审核：{review.summaryDone ? "已完成" : review.step === "summary" ? "进行中" : "待开始"}
+          </p>
+          <p>
+            当前：{review.step === "speech" ? "声音转写" : review.step === "visual" ? "图片 / 视频审核" : "汇总审核"}
+            {" · "}{review.current}
+          </p>
+          <small>完成数量表示已检查，不代表全部通过。</small>
+        </div>
+      )}
       {!offline && !noHeartbeat && p?.status === "running" && (
         <small>
           <Radio size={12} />

@@ -1,3 +1,4 @@
+import { timingManifest } from "../packages/production";
 import { seedSeries, approveFixture, scriptFixture } from "./fixtures/series";
 import { test, expect, afterEach } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -278,7 +279,7 @@ test("强制重试跳过完成缓存，只替换一张定妆图", async () => {
       t.id,
     )?.content,
   ).toContain(result.data.assets[0].imageId);
-  expect(f.store.task(t.id).status).toBe("provider_blocked");
+  expect(f.store.task(t.id).status).toBe("paused"); // 新选图须重新审核后发布为全剧定妆。
   expect(f.store.task(t.id).revision).toBe(1);
   f.store.updateTask(t.id, 1, "running");
   await expect(
@@ -358,6 +359,65 @@ test("末帧来自实际已用视频段，长度不足拒绝接续；超限时�
     ),
   ).rejects.toThrow("1～2");
 });
+test("图片审核最多三项并发，共享批次进度且全部完成后才汇总", async () => {
+  const f = await fixture();
+  const t = f.store.one<Task>("SELECT * FROM tasks WHERE projectId=? AND stage=3", f.project.id)!;
+  const master: Connection = { ...f.c, id: "parallel-review", transport: "cli", provider: "claude" };
+  let active = 0, peak = 0, completed = 0, summaries = 0;
+  const callIds = new Set<string>();
+  let fail = false;
+  const runtime = new Runtime(f.store, f.root, async (_c, prompt, _cwd, callSignal) => {
+    if (prompt.startsWith("你是主控。审核附带")) {
+      active++;
+      peak = Math.max(peak, active);
+      if (fail) {
+        try {
+          await Bun.sleep(20);
+          if (callSignal.aborted) throw Error("已中断");
+          throw Error("审核模型失败");
+        } finally {
+          active--;
+        }
+      }
+      const p = (f.store.board(f.project.id) as any).progress[0];
+      callIds.add(p.callId);
+      expect(p.review.current).toContain("并发审核");
+      await expect(runtime.call(t, "other", master, "另一任务", new AbortController().signal)).rejects.toThrow("正在执行其他任务");
+      await Bun.sleep(30);
+      active--;
+      completed++;
+    } else {
+      summaries++;
+      expect(active).toBe(0);
+      expect(completed).toBe(5);
+    }
+    return JSON.stringify({ pass: true, feedback: "通过" });
+  });
+  resources.find((r) => r.store === f.store)!.runtime = runtime;
+  const signal = new AbortController().signal;
+  const assets: { id: string; name: string; kind: "character"; prompt: string; imageId: string }[] = [];
+  for (let i = 0; i < 5; i++) {
+    const imageId = await runtime.media.ensure(t.id, t.revision, "image", `定妆 ${i}`, [], {}, signal);
+    assets.push({ id: String(i), name: `角色 ${i}`, kind: "character" as const, prompt: "定妆", imageId });
+  }
+  runtime.pipeline.produce = async () => ({ type: "assets", data: { summary: "定妆", assets, voices: [] } }) as any;
+  await runtime.pipeline.execute(t, "batch-test", master, master, [], signal);
+  expect(f.store.task(t.id).status).toBe("awaiting_user");
+  expect(peak).toBe(3);
+  expect(callIds.size).toBe(1);
+  expect(summaries).toBe(1);
+  expect(runtime.connections.size).toBe(0);
+  fail = true;
+  summaries = 0;
+  completed = 0;
+  await runtime.pipeline.execute(t, "failed-batch", master, master, [], signal);
+  expect(active).toBe(0);
+  expect(completed).toBe(0);
+  expect(summaries).toBe(0);
+  expect(runtime.connections.size).toBe(0);
+  expect(f.store.task(t.id).status).not.toBe("awaiting_user");
+});
+
 test("定妆→动态分镜→视频→音乐字幕成片完整流程，产物由真实 FFmpeg 合成", async () => {
   const f = await fixture();
   const cli: Connection = {
@@ -437,8 +497,8 @@ test("定妆→动态分镜→视频→音乐字幕成片完整流程，产物�
   );
   for (const stage of [3, 4, 5, 6]) {
     const t = f.store.one<Task>(
-      "SELECT * FROM tasks WHERE stage=? AND episode=1",
-      stage,
+      "SELECT * FROM tasks WHERE stage=? AND episode=?",
+      stage, stage === 3 ? 0 : 1,
     )!;
     f.store.updateTask(t.id, t.revision, "ready");
     runtime.start(t.id, t.revision);
@@ -447,6 +507,13 @@ test("定妆→动态分镜→视频→音乐字幕成片完整流程，产物�
     const current = f.store.task(t.id);
     expect(current.error).toBe("");
     expect(current.status).toBe("awaiting_user");
+    const review = JSON.parse(f.store.one<{ data: string }>(
+      "SELECT data FROM media_review_progress WHERE taskId=? AND revision=?", t.id, t.revision,
+    )!.data);
+    expect(review.speechDone).toBe(review.speechTotal);
+    expect(review.visualDone).toBe(review.visualTotal);
+    expect(review.step).toBe("summary");
+    expect(review.summaryDone).toBe(true);
     const a = f.store.one<Artifact>(
       "SELECT * FROM artifacts WHERE taskId=? AND status='reviewed' ORDER BY createdAt DESC LIMIT 1",
       t.id,
@@ -462,19 +529,13 @@ test("定妆→动态分镜→视频→音乐字幕成片完整流程，产物�
     JSON.stringify({ type: "shot-plan", data: JSON.parse(shotPlan) }),
     2,
   );
-  const secondAssets = f.store
-    .tasks(f.project.id)
-    .find((t) => t.stage === 3 && t.episode === 2)!;
-  runtime.start(secondAssets.id, secondAssets.revision);
-  for (let n = 0; n < 500 && runtime.active.has(secondAssets.id); n++)
-    await Bun.sleep(20);
-  expect(f.store.task(secondAssets.id).status).toBe("awaiting_user");
+  const globalAssets = f.store.tasks(f.project.id).filter(t => t.stage === 3);
+  expect(globalAssets).toHaveLength(1);
+  expect(globalAssets[0].episode).toBe(0);
+  const secondPreview = f.store.tasks(f.project.id).find(t => t.stage === 4 && t.episode === 2)!;
+  expect(f.store.canRun(secondPreview)).toBe(true);
+  expect(f.store.upstream(secondPreview).some(a => a.taskId === globalAssets[0].id)).toBe(true);
   expect(f.counts().submissions).toBe(beforeReuse);
-  const reused = f.store.one<Artifact>(
-    "SELECT * FROM artifacts WHERE taskId=? AND status='reviewed' ORDER BY rowid DESC LIMIT 1",
-    secondAssets.id,
-  )!;
-  f.store.approve(secondAssets.id, secondAssets.revision, reused.id);
   expect(f.store.assetLibrary(f.project.id)).toHaveLength(1);
   const final = f.store.one<Artifact>(
     "SELECT a.* FROM artifacts a JOIN tasks t ON t.id=a.taskId WHERE t.stage=6 AND a.status='approved'",
@@ -707,6 +768,7 @@ test("定妆方案含本集雨夜则验收失败，不拿去生图", async () =>
 
 test("语音连接缺失时先保存定妆图，补齐连接后复用图片继续试听", async () => {
   const f = await fixture();
+  seedVoiceSchedule(f.store, f.project.id, ["主角"]);
   const { MediaPipeline } = await import("../apps/server/media-pipeline");
   const task = f.store.tasks(f.project.id).find((t) => t.stage === 3)!;
   let voiceReady = false,
@@ -771,6 +833,7 @@ test("语音连接缺失时先保存定妆图，补齐连接后复用图片继�
 
 test("试听支持空列表、单角色和全部强制重做，失败保留完成项与定妆图", async () => {
   const f = await fixture();
+  seedVoiceSchedule(f.store, f.project.id, ["甲", "乙"]);
   const { MediaPipeline } = await import("../apps/server/media-pipeline");
   const task = f.store.tasks(f.project.id).find((t) => t.stage === 3)!;
   const assets = ["甲", "乙"].map((name) => ({
@@ -788,30 +851,25 @@ test("试听支持空列表、单角色和全部强制重做，失败保留完�
       data: { summary: "角色", assets, voices: [] },
     }),
   );
-  f.store.upstream = () =>
-    [
-      {
-        content: JSON.stringify({
-          type: "shot-plan",
-          data: {
-            summary: "台词",
-            shots: ["甲", "乙"].map((name) => ({
-              id: name,
-              title: name,
-              prompt: name,
-              duration: 1,
-              speaker: name,
-              dialogue: "已确认台词",
-            })),
-          },
-        }),
-      },
-    ] as Artifact[];
+  f.store.db.run("INSERT INTO bindings VALUES(?,?)", ["文本模型", f.c.id]);
+  f.store.upstream = () => [{ content: JSON.stringify({
+    type: "story", bible: "甲沉着，乙活泼，这是全剧稳定设定。",
+  }) }] as Artifact[];
+  let auditionPlans = 0;
   let calls = 0,
     failAt = 0;
   const pipeline = new MediaPipeline({
     store: f.store,
     active: new Map(),
+    call: async (_task: unknown, _attempt: unknown, _connection: unknown, prompt: string) => {
+      auditionPlans++;
+      expect(prompt).toContain("全剧稳定设定");
+      expect(prompt).not.toContain('"type":"shot-plan"');
+      return JSON.stringify({ voices: ["甲", "乙"].filter((name) =>
+        prompt.includes(`"name":"${name}"`)).map((character) => ({
+          character, voice: "alloy", sampleText: `${character}的独立试听稿`,
+        })) });
+    },
     media: {
       connection: () => f.c,
       ensure: async (...args: any[]) => {
@@ -857,10 +915,12 @@ test("试听支持空列表、单角色和全部强制重做，失败保留完�
   expect(saved.status).toBe("candidate");
   expect(f.store.task(task.id).status).toBe("needs_user");
   await expect(run("不存在")).rejects.toThrow("没有可生成");
+  expect(auditionPlans).toBe(2);
 });
 
 test("Qwen 定妆写声音卡并用长句试听，跨集复用，再听一条不改卡", async () => {
   const f = await fixture();
+  seedVoiceSchedule(f.store, f.project.id, ["沈不言"]);
   const { MediaPipeline } = await import("../apps/server/media-pipeline");
   const { compileVoiceInstruct } = await import("../apps/server/voice-casting");
   const task = f.store.tasks(f.project.id).find((t) => t.stage === 3)!;
@@ -978,7 +1038,7 @@ test("Qwen 定妆写声音卡并用长句试听，跨集复用，再听一条不
   expect(prompts.some((p) => p.includes("声音卡"))).toBe(true);
   expect(prompts.some((p) => p.includes("湿透"))).toBe(false);
   expect(speech[0].prompt).toBe(audition);
-  expect(speech[0].options.instructions).toContain("青年男性");
+  expect(speech[0].options.instructions).toContain("体现17岁少年男声");
   expect(speech[0].options.instructions).not.toContain("湿透");
   expect("voices" in first.data && first.data.voices[0].sampleText).toBe(
     audition,
@@ -1273,3 +1333,13 @@ test("删除生成素材会失效缓存，相同请求重新生成", async () =>
   expect(media.files.get(second).id).toBe(second);
   expect(f.counts().submissions).toBe(2);
 });
+
+function seedVoiceSchedule(store: Store, projectId: string, speakers: string[]) {
+  const task = store.tasks(projectId).find(t => t.stage === 2 && t.episode === 1)!;
+  const manifest = timingManifest(scriptFixture(1, 2))!;
+  manifest.episodes[0].beats.forEach((b, i) => {
+    if (b.performance) b.performance.dialogue = i === 0 ? speakers.map(speaker => ({ speaker, text: "实际台词。" })) : [];
+  });
+  const art = store.publish(task.id, task.revision, '```production-json\n' + JSON.stringify(manifest) + '\n```');
+  store.db.run("UPDATE artifacts SET status='approved' WHERE id=?", [art.id]);
+}

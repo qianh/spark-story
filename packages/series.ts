@@ -3,8 +3,8 @@ import { lookRegistrySchema } from "./look-registry";
 
 // Existing stage IDs are stable on disk; display/dependency order is explicit.
 export const stageOrder = [0, 7, 1, 2, 8, 3, 4, 5, 6];
-export const globalStages = [0, 7, 1];
-export const episodeStages = [2, 8, 3, 4, 5, 6];
+export const globalStages = [0, 7, 1, 3];
+export const episodeStages = [2, 8, 4, 5, 6];
 export const isMediaStage = (stage: number) => [3, 4, 5, 6].includes(stage);
 export const rank = (stage: number) => stageOrder.indexOf(stage);
 export const episodeLabel = (n: number) => `EP${String(n).padStart(3, "0")}`;

@@ -36,13 +36,14 @@ export class Runtime {
     prompt: string,
     signal: AbortSignal,
     images: string[] = [],
+    batchProgress?: ProgressTracker,
   ) {
-    if (this.connections.has(c.id))
+    if (!batchProgress && this.connections.has(c.id))
       throw Error("该连接正在执行其他任务，请稍后重试");
-    this.connections.add(c.id);
+    if (!batchProgress) this.connections.add(c.id);
     let reservation: string | null = null,
       submitted = false;
-    const progress = new ProgressTracker(this.store, task, c);
+    const progress = batchProgress || new ProgressTracker(this.store, task, c);
     try {
       if (signal.aborted) throw Error("任务已中断");
       if (c.transport === "api" && !getCredential(c))
@@ -63,14 +64,14 @@ export class Runtime {
         progress.text,
       );
       progress.text(result);
-      progress.finish("completed");
+      if (!batchProgress) progress.finish("completed");
       if (reservation)
         this.store.db.run("UPDATE costs SET status='provisional' WHERE id=?", [
           reservation,
         ]);
       return result;
     } catch (e) {
-      progress.finish(signal.aborted ? "interrupted" : "failed");
+      if (!batchProgress) progress.finish(signal.aborted ? "interrupted" : "failed");
       if (reservation)
         this.store.db.run("UPDATE costs SET status=? WHERE id=?", [
           submitted ? "unknown" : "released",
@@ -78,12 +79,40 @@ export class Runtime {
         ]);
       throw e;
     } finally {
-      this.connections.delete(c.id);
+      if (!batchProgress) this.connections.delete(c.id);
+    }
+  }
+  async reviewBatch<T>(
+    task: Task,
+    connection: Connection,
+    signal: AbortSignal,
+    run: (progress: ProgressTracker, signal: AbortSignal) => Promise<T>,
+  ) {
+    if (this.connections.has(connection.id))
+      throw Error("该连接正在执行其他任务，请稍后重试");
+    this.connections.add(connection.id);
+    const progress = new ProgressTracker(this.store, task, connection);
+    const abort = new AbortController();
+    const combined = AbortSignal.any([signal, abort.signal]);
+    try {
+      const result = await run(progress, combined);
+      progress.finish("completed");
+      return result;
+    } catch (error) {
+      abort.abort();
+      progress.finish(signal.aborted ? "interrupted" : "failed");
+      throw error;
+    } finally {
+      this.connections.delete(connection.id);
     }
   }
   start(taskId: string, revision: number) {
-    const task = this.store.task(taskId);
+    let task = this.store.task(taskId);
     if (task.revision !== revision) throw Error("任务版本已变化");
+    if (task.stage === 3 && task.status === "approved") {
+      task = this.store.extendApprovedLooks(task.id);
+      revision = task.revision;
+    }
     if (this.active.has(taskId)) throw Error("任务正在执行或停止中");
     const intervention = this.store.one<{
       id: string;
@@ -149,6 +178,7 @@ export class Runtime {
             upstream.filter((a) => {
               const stage = this.store.task(a.taskId).stage;
               if (task.stage === 3 && stage === 7) return true;
+              if (task.stage !== 3 && stage === 3) return true;
               return !globalStages.includes(stage);
             }),
             abort.signal,

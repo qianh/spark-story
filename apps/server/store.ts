@@ -18,7 +18,7 @@ import {
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { upgradeEpisodePlanning, upgradeSeriesWorkflow } from "./migrations";
+import { upgradeEpisodePlanning, upgradeSeriesWorkflow, upgradeGlobalLooks } from "./migrations";
 import {
   productionRulesSchema,
   validateTextProduction,
@@ -34,6 +34,7 @@ import {
   type Connection,
   type Artifact,
 } from "../../packages/domain";
+import { donghuaStyleVersion, isSeriesMasterLook, visualStyleKey } from "../../packages/visual-style";
 
 const id = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
@@ -61,6 +62,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS events_project ON events(projectId,seq);
       CREATE INDEX IF NOT EXISTS artifacts_task ON artifacts(taskId,createdAt);
       CREATE TABLE IF NOT EXISTS task_progress(taskId TEXT PRIMARY KEY,revision INTEGER,callId TEXT,phase TEXT,actor TEXT,model TEXT,content TEXT,startedAt TEXT,heartbeatAt TEXT,outputAt TEXT,status TEXT);
+      CREATE TABLE IF NOT EXISTS media_review_progress(taskId TEXT PRIMARY KEY,revision INTEGER,data TEXT);
       CREATE TABLE IF NOT EXISTS planning_checkpoints(id TEXT PRIMARY KEY,taskId TEXT,revision INTEGER,kind TEXT,content TEXT,status TEXT,createdAt TEXT);
     `);
     upgradeEpisodePlanning(this, path);
@@ -69,6 +71,7 @@ export class Store {
       .exec(`CREATE TABLE IF NOT EXISTS voice_library(projectId TEXT,character TEXT,connectionId TEXT,data TEXT,PRIMARY KEY(projectId,character,connectionId));
       CREATE TABLE IF NOT EXISTS episodes(projectId TEXT,number INTEGER,planRevision INTEGER,data TEXT,active INTEGER DEFAULT 1,PRIMARY KEY(projectId,number));
       CREATE TABLE IF NOT EXISTS asset_library(id TEXT PRIMARY KEY,projectId TEXT,assetId TEXT,version INTEGER,taskId TEXT,revision INTEGER,data TEXT,createdAt TEXT,UNIQUE(projectId,assetId,version));`);
+    upgradeGlobalLooks(this, path);
   }
   list<T>(sql: string, ...args: any[]): T[] {
     return this.db.query(sql).all(...args) as T[];
@@ -131,13 +134,22 @@ export class Store {
     return row ? JSON.parse(row.data) : {};
   }
   visualStyle(projectId: string) {
-    const catalog = catalogVisualStyle(this.project(projectId).template);
-    const saved = this.settings(projectId).visual;
-    if (saved?.id === catalog.id && saved.version !== catalog.version)
-      return { ...catalog, referenceImageId: saved.referenceImageId };
+    const settings = this.settings(projectId);
+    const saved = settings.visual;
+    const visualRevision = settings.visualRevision || 0;
+    if (
+      saved?.id === "donghua3d" &&
+      /^xianxia-(?:style-dna|universal)-v\d+$/.test(saved.version || "") &&
+      saved.version !== donghuaStyleVersion
+    )
+      return {
+        ...catalogVisualStyle("donghua3d"),
+        referenceImageId: null,
+        visualRevision,
+      };
     if (saved?.id && typeof saved.prompt === "string" && saved.prompt)
-      return saved;
-    return catalog;
+      return { ...saved, visualRevision };
+    return { ...catalogVisualStyle(this.project(projectId).template), visualRevision };
   }
   lookRegistry(projectId: string) {
     const saved = this.settings(projectId).lookRegistry;
@@ -154,15 +166,36 @@ export class Store {
     );
     return art ? structured(art.content, storySchema)?.lookRegistry : undefined;
   }
+  bindMasterLookRef(projectId: string, imageId: string) {
+    const style = this.visualStyle(projectId);
+    if (!imageId || style.referenceImageId === imageId) return;
+    const file = this.one(
+      "SELECT id FROM media_files WHERE id=? AND projectId=? AND kind='image'",
+      imageId,
+      projectId,
+    );
+    if (
+      !file &&
+      this.one("SELECT id FROM media_files WHERE projectId=? LIMIT 1", projectId)
+    )
+      throw Error("主参考必须是当前作品的图片");
+    this.patchSettings(projectId, {
+      visual: { ...style, referenceImageId: imageId },
+    });
+  }
   setVisualReference(projectId: string, referenceImageId: string) {
     const style = this.visualStyle(projectId);
     if (referenceImageId && !this.one("SELECT id FROM media_files WHERE id=? AND projectId=? AND kind='image'", referenceImageId, projectId))
       throw Error("画风参考必须是当前作品的图片");
+    if ((style.referenceImageId || "") === referenceImageId) return;
     if (this.one("SELECT id FROM tasks WHERE projectId=? AND status IN ('running','reviewing','coordinating')", projectId) ||
         this.one("SELECT id FROM media_jobs WHERE projectId=? AND status IN ('submitting','polling','downloading')", projectId))
       throw Error("请等待当前生成结束后更换画风参考");
-    this.patchSettings(projectId, { visual: { ...style, referenceImageId: referenceImageId || undefined } });
-    this.event(projectId, "", "visual.reference", "作品美术参考已更新；后续生成使用此参考，已有图片需要重新验收。");
+    this.db.transaction(() => {
+      this.patchSettings(projectId, { visual: { ...style, referenceImageId: referenceImageId || undefined } });
+      this.invalidateVisualMedia(projectId);
+      this.event(projectId, "", "visual.reference", "作品美术参考已更新；定妆、关键帧及下游需按新参考重新生成，旧文件保留为历史。");
+    })();
   }
   patchSettings(projectId: string, patch: Record<string, unknown>) {
     this.db.run(
@@ -213,7 +246,8 @@ export class Store {
         "SELECT * FROM tasks WHERE projectId=? AND stage=7",
         projectId,
       )!;
-      this.invalidateAfter(outline);
+      for (const downstream of this.downstream(outline).filter((t) => t.stage !== 3))
+        this.db.run("UPDATE tasks SET revision=revision+1,round=0,status='blocked',error='制作规则已修改，等待重新确认',updatedAt=? WHERE id=?", [now(), downstream.id]);
       this.db.run("UPDATE tasks SET round=0 WHERE projectId=? AND stage>0", [
         projectId,
       ]);
@@ -237,8 +271,9 @@ export class Store {
     return this.db.transaction(() => {
       const prev = this.settings(projectId).visual || {};
       const sameId = prev.id === style.id;
-      const samePrompt = prev.prompt === style.prompt;
-      if (sameId && samePrompt) {
+      const next = sameId ? { ...style, referenceImageId: prev.referenceImageId } : style;
+      // Compare the definition; the generation revision advances only after a real change.
+      if (visualStyleKey({ ...prev, visualRevision: 0 }) === visualStyleKey({ ...next, visualRevision: 0 })) {
         this.patchSettings(projectId, { visual: { ...style, referenceImageId: prev.referenceImageId } });
         return style;
       }
@@ -260,26 +295,8 @@ export class Store {
         templateId,
         projectId,
       ]);
-      this.patchSettings(projectId, { visual: style });
-      for (const t of this.tasks(projectId).filter((t) =>
-        isMediaStage(t.stage),
-      )) {
-        this.db.run(
-          "UPDATE tasks SET revision=revision+1,round=0,error='',updatedAt=? WHERE id=?",
-          [now(), t.id],
-        );
-        const current = this.task(t.id);
-        this.db.run("UPDATE tasks SET status=? WHERE id=?", [
-          this.canRun(current) ? "ready" : "blocked",
-          t.id,
-        ]);
-        const checkpoint = this.one<Artifact>(
-          "SELECT * FROM artifacts WHERE taskId=? ORDER BY createdAt DESC LIMIT 1",
-          t.id,
-        );
-        if (checkpoint)
-          this.publish(current.id, current.revision, checkpoint.content);
-      }
+      this.patchSettings(projectId, { visual: next });
+      this.invalidateVisualMedia(projectId);
       this.event(
         projectId,
         "",
@@ -290,6 +307,41 @@ export class Store {
       );
       return style;
     })();
+  }
+  visualRevision(projectId: string): number {
+    return this.settings(projectId).visualRevision || 0;
+  }
+  // Copy content into a fresh revision, never carry rendered output into a new style.
+  invalidateVisualMedia(projectId: string) {
+    this.patchSettings(projectId, { visualRevision: this.visualRevision(projectId) + 1 });
+    const tasks = this.list<Task>("SELECT * FROM tasks WHERE projectId=?", projectId)
+      .filter((t) => isMediaStage(t.stage));
+    for (const t of tasks) {
+      const checkpoint = this.one<Artifact>(
+        "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY rowid DESC LIMIT 1",
+        t.id, t.revision,
+      );
+      this.db.run("UPDATE artifacts SET status='superseded' WHERE taskId=?", [t.id]);
+      this.db.run("UPDATE tasks SET revision=revision+1,round=0,status='blocked',error='',updatedAt=? WHERE id=?", [now(), t.id]);
+      const bundle = checkpoint && mediaBundle(checkpoint.content);
+      if (!bundle) continue;
+      const data = bundle.data as Record<string, any>;
+      const clean = (item: Record<string, any>) => {
+        const copy = { ...item };
+        for (const key of ["imageId", "videoId", "sourceAudioId", "libraryId", "baseLibraryId", "candidates", "candidateSpecs", "selectedCandidateId", "generationPrompt", "generationStyleVersion", "generationStyleKey", "generationReferenceIds", "draftImage"])
+          delete copy[key];
+        return copy;
+      };
+      if (Array.isArray(data.assets)) data.assets = data.assets.map(clean);
+      if (Array.isArray(data.shots)) data.shots = data.shots.map(clean);
+      for (const key of ["previewId", "exportId", "subtitleId", "dialogueTrackId", "mixedTrackId"])
+        delete data[key];
+      this.publish(t.id, t.revision + 1, JSON.stringify(bundle));
+    }
+    for (const t of tasks) {
+      const current = this.task(t.id);
+      if (this.canRun(current)) this.updateTask(t.id, current.revision, "ready");
+    }
   }
   task(id: string) {
     const t = this.one<Task>("SELECT * FROM tasks WHERE id=?", id);
@@ -331,6 +383,31 @@ export class Store {
       ).changes > 0
     );
   }
+  extendApprovedLooks(taskId: string) {
+    const t = this.task(taskId);
+    if (t.stage !== 3 || t.status !== "approved")
+      throw Error("仅已确认的全剧定妆可追加后集资产");
+    const art = this.one<Artifact>(
+      "SELECT * FROM artifacts WHERE taskId=? AND revision=? AND status='approved' ORDER BY createdAt DESC LIMIT 1",
+      t.id,
+      t.revision,
+    );
+    const next = t.revision + 1;
+    this.db.transaction(() => {
+      this.db.run(
+        "UPDATE tasks SET revision=?,round=0,status='ready',instruction='',error='',updatedAt=? WHERE id=?",
+        [next, now(), t.id],
+      );
+      if (art) this.publish(t.id, next, art.content);
+    })();
+    this.event(
+      t.projectId,
+      t.id,
+      "look.extend",
+      "已打开新的定妆修订，保留已确认资产，可按下一集补出缺失变体。",
+    );
+    return this.task(t.id);
+  }
   claim(taskId: string, revision: number, snapshot: unknown) {
     return this.db.transaction(() => {
       const result = this.db.run(
@@ -369,6 +446,36 @@ export class Store {
       a.createdAt,
     ]);
     return a;
+  }
+  removeArtifacts(projectId: string, ids: string[]) {
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (!unique.length) throw Error("请选择要删除的产物");
+    const rows = unique.map((id) => {
+      const row = this.one<{
+        id: string;
+        projectId: string;
+        taskStatus: string;
+      }>(
+        `SELECT a.id, t.projectId, t.status AS taskStatus
+         FROM artifacts a JOIN tasks t ON t.id=a.taskId WHERE a.id=?`,
+        id,
+      );
+      if (!row || row.projectId !== projectId)
+        throw Error("产物不存在或不属于当前项目");
+      if (["running", "reviewing", "coordinating"].includes(row.taskStatus))
+        throw Error("任务正在执行，请先中断再删除产物");
+      return row;
+    });
+    this.db.transaction(() => {
+      for (const row of rows)
+        this.db.run("DELETE FROM artifacts WHERE id=?", [row.id]);
+    })();
+    this.event(
+      projectId,
+      "",
+      "artifact.deleted",
+      `已删除 ${unique.length} 个产物。`,
+    );
   }
   approve(taskId: string, revision: number, artifactId: string) {
     return this.db.transaction(() => {
@@ -542,6 +649,8 @@ export class Store {
     );
   }
   dependencies(task: Task) {
+    if (task.stage === 3)
+      return this.list<Task>("SELECT * FROM tasks WHERE projectId=? AND stage IN (0,7) ORDER BY stage", task.projectId);
     return this.list<Task>(
       "SELECT * FROM tasks WHERE projectId=? AND (episode=0 OR episode=?)",
       task.projectId,
@@ -561,7 +670,8 @@ export class Store {
   downstream(task: Task) {
     return this.tasks(task.projectId).filter(
       (t) =>
-        rank(t.stage) > rank(task.stage) &&
+        (t.stage !== 3 || [0, 7].includes(task.stage)) &&
+        (rank(t.stage) > rank(task.stage) || (t.stage === 3 && [0,7].includes(task.stage))) &&
         (globalStages.includes(task.stage) ||
           (t.episode === task.episode && !globalStages.includes(t.stage))),
     );
@@ -770,6 +880,13 @@ export class Store {
       }
     for (const asset of assets) {
       if (asset.libraryId) continue;
+      if (!asset.imageId) continue;
+      if (
+        /^xianxia-style-dna-v\d+$/.test(asset.generationStyleVersion || "") &&
+        !isSeriesMasterLook(asset) &&
+        !(asset.generationReferenceIds || []).length
+      )
+        continue;
       const version =
         (this.one<{ n: number }>(
           "SELECT MAX(version) AS n FROM asset_library WHERE projectId=? AND assetId=?",
@@ -885,9 +1002,9 @@ export class Store {
       ).map((r: any) => ({ ...r, ...JSON.parse(r.data), data: undefined })),
       assetLibrary: this.assetLibrary(projectId),
       progress: this.list(
-        "SELECT p.* FROM task_progress p JOIN tasks t ON t.id=p.taskId WHERE t.projectId=?",
+        "SELECT p.*, r.data AS review FROM task_progress p JOIN tasks t ON t.id=p.taskId LEFT JOIN media_review_progress r ON r.taskId=p.taskId AND r.revision=p.revision AND t.status='reviewing' WHERE t.projectId=?",
         projectId,
-      ),
+      ).map((p: any) => ({ ...p, review: p.review ? JSON.parse(p.review) : undefined })),
       mediaFiles: this.list(
         "SELECT * FROM media_files WHERE projectId=? ORDER BY createdAt DESC",
         projectId,

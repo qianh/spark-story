@@ -82,7 +82,7 @@ export const templates = [
     en: "XIANXIA DONGHUA",
     color: "#7b9aa8",
     description:
-      "公共画风 DNA：仙侠 3D 材质与气质；人物、道具、场景各用自己的模块锁",
+      "通用仙侠画风：每张图原样使用同一段画风，只追加资产类型与内容",
     prompt: donghuaStylePrompt,
   },
 ];

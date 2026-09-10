@@ -125,3 +125,46 @@ export function upgradeSeriesWorkflow(store: Store, path: string) {
   if (store.list("PRAGMA foreign_key_check").length)
     throw Error("流程迁移后的数据引用检查失败");
 }
+
+/** Consolidate episode looks without discarding artifacts, media or task history. */
+export function upgradeGlobalLooks(store: Store, path: string) {
+  const projects = store.list<{ projectId: string }>(
+    "SELECT DISTINCT projectId FROM tasks WHERE stage=3 AND episode<>0",
+  );
+  if (!projects.length) return;
+  if (path !== ":memory:") store.db.run("VACUUM INTO ?", [`${path}.before-global-looks-${crypto.randomUUID()}.sqlite`]);
+  store.db.transaction(() => {
+    store.db.exec("CREATE TABLE IF NOT EXISTS workflow_task_history(id TEXT PRIMARY KEY,data TEXT,createdAt TEXT)");
+    for (const { projectId } of projects) {
+      const tasks = store.list<Task>("SELECT * FROM tasks WHERE projectId=? AND stage=3 ORDER BY episode", projectId);
+      const canonical = tasks[0]!;
+      let revision = 0;
+      for (const task of tasks) {
+        store.db.run("INSERT OR IGNORE INTO workflow_task_history VALUES(?,?,?)", [task.id, JSON.stringify(task), new Date().toISOString()]);
+        // Offset each old task's revisions so every historical artifact/job remains distinguishable.
+        for (const table of ["artifacts", "attempts", "interventions", "media_files", "media_jobs", "planning_checkpoints", "asset_library"])
+          store.db.run(`UPDATE ${table} SET taskId=?,revision=revision+? WHERE taskId=?`, [canonical.id, revision, task.id]);
+        if (task.id !== canonical.id) {
+          store.db.run("UPDATE events SET taskId=? WHERE taskId=?", [canonical.id, task.id]);
+          for (const table of ["task_progress", "media_review_progress"]) {
+            const progress = store.one(`SELECT * FROM ${table} WHERE taskId=?`, task.id);
+            if (progress) store.db.run("INSERT OR IGNORE INTO workflow_task_history VALUES(?,?,?)", [`${table}:${task.id}`, JSON.stringify(progress), new Date().toISOString()]);
+            store.db.run(`DELETE FROM ${table} WHERE taskId=?`, [task.id]);
+          }
+          store.db.run("DELETE FROM tasks WHERE id=?", [task.id]);
+        }
+        revision += task.revision;
+      }
+      store.db.run("UPDATE artifacts SET status='superseded' WHERE taskId=?", [canonical.id]);
+      store.db.run("UPDATE attempts SET status='interrupted' WHERE taskId=? AND status='running'", [canonical.id]);
+      store.db.run("UPDATE costs SET status='unknown' WHERE status='reserved' AND id IN (SELECT costId FROM media_jobs WHERE taskId=? AND status IN ('submitting','polling','downloading'))", [canonical.id]);
+      store.db.run("UPDATE media_jobs SET status=CASE WHEN remoteId != '' THEN 'detached' ELSE 'unknown' END,error='全剧定妆流程迁移；远端状态待核实，未自动重发' WHERE taskId=? AND status IN ('submitting','polling','downloading')", [canonical.id]);
+      store.db.run("UPDATE tasks SET episode=0,title='定妆与资产',revision=?,round=0,status='blocked',instruction='',error='定妆已改为全剧共享；历史定妆保留，请重新生成并确认完整资产。',updatedAt=? WHERE id=?", [revision + 1, new Date().toISOString(), canonical.id]);
+      const current = store.task(canonical.id);
+      if (store.canRun(current)) store.updateTask(current.id, current.revision, "ready");
+      store.invalidateAfter(current);
+      store.event(projectId, canonical.id, "workflow.global-looks", "定妆已合并为全剧共享任务，只依赖完整故事；各集关键帧使用同一份已确认定妆。原任务记录、产物与媒体文件均已保留。");
+    }
+  })();
+  if (store.list("PRAGMA foreign_key_check").length) throw Error("全剧定妆迁移后的数据引用检查失败");
+}

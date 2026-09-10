@@ -7,6 +7,7 @@ import {
   type MediaJob,
 } from "../packages/media";
 import {
+  ArtifactLibrary,
   BundleView,
   MediaGenerationProgress,
   MediaLibrary,
@@ -72,6 +73,35 @@ test("定妆方案立刻拆成可预览条目，已生成文件计入完成数",
   expect(progress.total).toBe(4);
   expect(progress.label).toContain("2 / 4");
   expect(progress.current?.status).toBe("polling");
+});
+
+test("无需试听不计入待生成产物，审核期间不误报声音处理中", () => {
+  const bundle = {
+    type: "assets",
+    data: {
+      summary: "定妆",
+      assets: [],
+      voices: [
+        { character: "沈不言", status: "ready", voice: "VoiceDesign", audioId: "a1", voicePortrait: {} },
+        { character: "病弱幼女", status: "not_required" },
+        { character: "窥伺影", status: "not_required" },
+      ],
+    },
+  };
+  const progress = mediaGenerationProgress({ bundle, jobs: [], running: false });
+  expect(progress.total).toBe(1);
+  expect(progress.done).toBe(1);
+  expect(progress.phase).toBe("complete");
+  const html = renderToStaticMarkup(
+    <BundleView content={JSON.stringify(bundle)} files={[]} busy={true} onSave={() => {}} onRetryVoices={() => {}} />,
+  );
+  expect(html).toContain("暂不需要生成，后续按需补齐");
+  expect(html).toContain("当前批次再听一条");
+  expect(html).not.toContain("处理中");
+  bundle.data.voices.push({ character: "待选声角色", status: "needs_voice" });
+  const pending = mediaGenerationProgress({ bundle, jobs: [], running: false });
+  expect(pending.total).toBe(2);
+  expect(pending.phase).toBe("generating");
 });
 
 test("尚无方案时只报告规划中，不编造完成百分比", () => {
@@ -248,6 +278,48 @@ test("媒体库提供勾选和批量删除", () => {
   expect(html).toContain("全选");
   expect(html).toContain('type="checkbox"');
   expect(html).toContain("选择 山门.png");
+});
+
+test("资产库产物记录提供勾选和批量删除", () => {
+  const html = renderToStaticMarkup(
+    <ArtifactLibrary
+      artifacts={[
+        {
+          id: "art-1",
+          taskId: "t",
+          revision: 52,
+          content: '{"type":"assets","data":{"summary":"定妆"}}',
+          status: "candidate",
+          createdAt: "",
+        },
+      ]}
+      tasks={[
+        {
+          id: "t",
+          projectId: "p",
+          stage: 3,
+          title: "定妆与资产",
+          role: "角色与资产 Agent",
+          status: "paused",
+          revision: 55,
+          round: 0,
+          instruction: "",
+          error: "",
+          updatedAt: "",
+        },
+      ]}
+      projectId="p"
+      act={() => {}}
+      onUpdated={() => {}}
+      onOpen={() => {}}
+    />,
+  );
+  expect(html).toContain("产物记录");
+  expect(html).toContain("批量删除");
+  expect(html).toContain("全选");
+  expect(html).toContain('type="checkbox"');
+  expect(html).toContain("选择 定妆与资产 修订 52");
+  expect(html).toContain("候选版");
 });
 
 test("定妆卡片提供单张重新生成，不进入整体编辑", () => {
@@ -492,6 +564,19 @@ test("旧试听没有声音卡时，声音区可单独生成画像，不重做�
     />,
   );
   expect(html).toContain("生成声音画像");
-  expect(html).toContain("全部生成声音画像");
+  expect(html).toContain("当前批次生成声音画像");
   expect(html).not.toContain("再听一条");
+});
+
+test("全剧其他角色待配音不阻塞当前批次进度，声音卡仍保留展示", () => {
+  const bundle = { type: "assets", data: {
+    summary: "全剧", voiceBatchAssetIds: ["shen:youth"],
+    assets: [{ id: "shen:youth", name: "沈不言", kind: "character", imageId: "shen-image" }, { id: "su:child", name: "苏晚晴", kind: "character", imageId: "su-image", growthStage: "child" }],
+    voices: [{ character: "沈不言", status: "ready", audioId: "shen-audio" }, { character: "苏晚晴", growthStage: "child", status: "needs_voice" }],
+  } };
+  expect(mediaGenerationProgress({ bundle, jobs: [], running: false }).phase).toBe("complete");
+  const html = renderToStaticMarkup(<BundleView content={JSON.stringify(bundle)} files={[]} busy={false} onSave={() => {}} />);
+  expect(html).toContain("苏晚晴");
+  expect(html).toContain("后续按需补齐");
+  expect(bundle.data.voices).toHaveLength(2);
 });

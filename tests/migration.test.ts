@@ -81,3 +81,38 @@ test("旧六阶段作品安全升级：概要保留、插入规划、下游待�
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("多集定妆迁移合并为全剧任务，历史图片和产物保留且重启幂等", async () => {
+  const root = await mkdtemp(join(tmpdir(), "global-looks-migration-"));
+  const path = join(root, "state.sqlite");
+  let s = new Store(path);
+  try {
+    const p = s.createProject({ name: "定妆迁移", source: "故事", inputType: "idea", aspect: "9:16", template: "cel", budget: 0 });
+    const first = s.tasks(p.id).find((t) => t.stage === 3)!;
+    s.db.run("UPDATE tasks SET episode=1 WHERE id=?", [first.id]);
+    s.createTask(p.id, 3, 2);
+    const second = s.one<Task>("SELECT * FROM tasks WHERE projectId=? AND stage=3 AND episode=2", p.id)!;
+    const a1 = s.publish(first.id, 1, "第一集旧定妆");
+    const a2 = s.publish(second.id, 1, "第二集旧定妆");
+    s.db.run("INSERT INTO media_files VALUES(?,?,?,?,?,?,?,?,?,?)", ["old-image", p.id, second.id, 1, "image", "历史", "/original.png", "image/png", "{}", "now"]);
+    s.db.close();
+    s = new Store(path);
+    const looks = s.tasks(p.id).filter((t) => t.stage === 3);
+    expect(looks).toHaveLength(1);
+    expect(looks[0].id).toBe(first.id);
+    expect(looks[0].episode).toBe(0);
+    expect(looks[0].revision).toBe(3);
+    expect(s.one<any>("SELECT * FROM artifacts WHERE id=?", a1.id).content).toBe("第一集旧定妆");
+    const moved = s.one<Artifact>("SELECT * FROM artifacts WHERE id=?", a2.id)!;
+    expect(moved.taskId).toBe(first.id);
+    expect(moved.revision).toBe(2);
+    expect(moved.status).toBe("superseded");
+    expect(s.one<any>("SELECT * FROM media_files WHERE id='old-image'").path).toBe("/original.png");
+    expect(s.list("SELECT * FROM workflow_task_history")).toHaveLength(2);
+    expect(s.list("PRAGMA foreign_key_check")).toEqual([]);
+    s.db.close();
+    s = new Store(path);
+    expect(s.tasks(p.id).filter((t) => t.stage === 3)).toEqual(looks);
+    expect((await readdir(root)).filter((f) => f.includes("before-global-looks"))).toHaveLength(1);
+  } finally { s.db.close(); await rm(root, { recursive: true, force: true }); }
+});

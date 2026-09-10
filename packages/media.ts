@@ -63,8 +63,16 @@ export const voiceSampleSchema = z.object({
   voiceIdentityKey: z.string().default(""),
   growthStage: z.string().optional(),
 });
+export function voiceInBatch(data: { voiceBatchAssetIds?: string[]; assets?: { id: string; name: string; growthStage?: string }[] }, voice: { character: string; growthStage?: string }) {
+  return data.voiceBatchAssetIds === undefined || (data.assets || []).some(a =>
+    data.voiceBatchAssetIds!.includes(a.id) && a.name === voice.character &&
+    (a.growthStage || "") === (voice.growthStage || ""));
+}
+
 export const assetPlanSchema = z.object({
   summary: z.string(),
+  // Scheduling metadata only; all assets and voices remain series-owned.
+  voiceBatchAssetIds: z.array(z.string()).optional(),
   assets: z
     .array(
       z.object({
@@ -85,6 +93,7 @@ export const assetPlanSchema = z.object({
         imageId: ref.optional(),
         generationPrompt: z.string().optional(),
         generationStyleVersion: z.string().optional(),
+        generationStyleKey: z.string().optional(),
         generationReferenceIds: z.array(z.string()).optional(),
         sourceAssetId: z.string().optional(),
         sourceUsage: z.enum(["view", "extract", "variant"]).optional(),
@@ -96,6 +105,13 @@ export const assetPlanSchema = z.object({
         growthStage: z.string().optional(),
         candidates: z.array(z.string()).optional(),
         selectedCandidateId: ref.optional(),
+        candidateSpecs: z.record(z.object({
+          prompt: z.string(),
+          styleKey: z.string(),
+          styleVersion: z.string(),
+          referenceIds: z.array(z.string()),
+          passed: z.boolean().optional(),
+        })).optional(),
       }),
     )
     .min(1),
@@ -125,6 +141,7 @@ export const shotSchema = z.object({
   route: z.enum(["separate", "native", "lipsync"]).default("separate"),
   imageId: ref.optional(),
   draftImage: z.boolean().default(false),
+  generationStyleKey: z.string().optional(),
   audioId: ref.optional(),
   videoId: ref.optional(),
   trimStart: z.number().min(0).default(0),
@@ -187,12 +204,14 @@ export function plannedMediaItems(
           kind: "image",
           fileId: a.imageId,
         })),
-      ...(data.voices || []).map((v: any, i: number) => ({
-        id: `voice-${v.character}-${i}`,
-        name: `${v.character} 试听`,
-        kind: "audio",
-        fileId: v.audioId,
-      })),
+      ...(data.voices || [])
+        .filter((v: any) => v.status !== "not_required" && voiceInBatch(data, v))
+        .map((v: any, i: number) => ({
+          id: `voice-${v.character}-${i}`,
+          name: `${v.character} 试听`,
+          kind: "audio",
+          fileId: v.audioId,
+        })),
     ];
   const items: MediaProgressItem[] = (data.shots || []).flatMap((s: any) => {
     const row: MediaProgressItem[] = [

@@ -130,7 +130,9 @@ describe("持久任务规则", () => {
     expect(s.visualStyle(p.id).prompt).toContain("赛璐璐");
     s.setVisualTemplate(p.id, "donghua3d");
     expect(s.visualStyle(p.id).id).toBe("donghua3d");
-    expect(s.visualStyle(p.id).prompt).toContain("SHARED STYLE DNA — never change across characters, props, or scenes:");
+    expect(s.visualStyle(p.id).prompt).toContain("UNIVERSAL XIANXIA STYLE");
+    expect(s.visualStyle(p.id).prompt).toContain("clear cold immortal aura");
+    expect(s.visualStyle(p.id).referenceImageId).toBeFalsy();
     const assets = s.one<any>("SELECT * FROM tasks WHERE stage=3")!;
     const rev = assets.revision;
     const row = s.one<{ data: string }>(
@@ -149,12 +151,37 @@ describe("持久任务规则", () => {
       }),
       p.id,
     ]);
-    expect(s.visualStyle(p.id).prompt).toContain("SHARED STYLE DNA — never change across characters, props, or scenes:");
+    expect(s.visualStyle(p.id).prompt).toBe("旧画风文本：高完成度东方仙侠");
+    expect(s.visualStyle(p.id).version).toBe("xianxia-3d-v3");
     s.setVisualTemplate(p.id, "donghua3d");
-    expect(s.visualStyle(p.id).prompt).toContain("SHARED STYLE DNA — never change across characters, props, or scenes:");
-    expect(s.visualStyle(p.id).version).toBe("xianxia-style-dna-v3");
-    expect(s.visualStyle(p.id).characterModule).toContain("CHARACTER SHEET");
+    expect(s.visualStyle(p.id).prompt).toContain("UNIVERSAL XIANXIA STYLE");
+    expect(s.visualStyle(p.id).version).toBe("xianxia-universal-v2");
+    expect(s.visualStyle(p.id).characterModule).toContain("ASSET: character sheet");
     expect(s.task(assets.id).revision).toBe(rev + 1);
+    s.db.run("UPDATE project_settings SET data=? WHERE projectId=?", [
+      JSON.stringify({
+        ...JSON.parse(
+          s.one<{ data: string }>(
+            "SELECT data FROM project_settings WHERE projectId=?",
+            p.id,
+          )!.data,
+        ),
+        visual: {
+          id: "donghua3d",
+          name: "三维仙侠国漫",
+          prompt: "High-finish 3D photorealistic cinematic xianxia production look.",
+          version: "xianxia-style-dna-v2",
+          referenceImageId: "old-brown-studio",
+        },
+      }),
+      p.id,
+    ]);
+    expect(s.visualStyle(p.id).version).toBe("xianxia-universal-v2");
+    expect(s.visualStyle(p.id).prompt).toContain("clear cold immortal aura");
+    expect(s.visualStyle(p.id).referenceImageId).toBeNull();
+    expect(s.visualStyle(p.id).prompt).not.toContain(
+      "High-finish 3D photorealistic cinematic",
+    );
   });
   test("重启保留未知费用并使旧执行失效", () => {
     const { s, p, t } = setup();
@@ -166,4 +193,100 @@ describe("持久任务规则", () => {
     expect(s.one<any>("SELECT status FROM costs")!.status).toBe("unknown");
     expect(() => s.reserve(p.id, "two", connection)).toThrow();
   });
+});
+
+test("每种新画风及新参考清除旧图片和视频引用，保留内容与历史", () => {
+  const { s, p } = setup();
+  try {
+    const looks = s.tasks(p.id).find((t) => t.stage === 3)!;
+    const frame = s.tasks(p.id).find((t) => t.stage === 4)!;
+    const asset = { id: "hero", name: "女孩", kind: "character", prompt: "女孩穿蓝衣", imageId: "old-image", libraryId: "old-library", generationStyleKey: "old-key", candidates: ["old-image"], candidateSpecs: { "old-image": {} } };
+    const original = s.publish(looks.id, looks.revision, JSON.stringify({ type: "assets", data: { summary: "全剧", assets: [asset], voices: [{ character: "女孩", audioId: "voice" }] } }));
+    s.publish(frame.id, frame.revision, JSON.stringify({ type: "storyboard", data: { summary: "关键帧", shots: [{ id: "shot", imageId: "frame", videoId: "video", sourceAudioId: "video-audio", prompt: "动作" }], previewId: "preview" } }));
+    let generation = s.visualRevision(p.id);
+    for (const style of ["donghua3d", "ink", "cel", "donghua3d"]) {
+      s.setVisualTemplate(p.id, style);
+      expect(s.visualRevision(p.id)).toBe(++generation);
+      const current = s.task(looks.id);
+      const content = JSON.parse(s.one<any>("SELECT content FROM artifacts WHERE taskId=? AND revision=?", looks.id, current.revision)!.content);
+      expect(content.data.assets[0].prompt).toBe(asset.prompt);
+      expect(content.data.assets[0].imageId).toBeUndefined();
+      expect(content.data.assets[0].libraryId).toBeUndefined();
+      expect(content.data.assets[0].candidateSpecs).toBeUndefined();
+      expect(content.data.assets[0].generationStyleKey).toBeUndefined();
+      expect(content.data.voices[0].audioId).toBe("voice");
+    }
+    const rendered = JSON.parse(s.one<any>("SELECT content FROM artifacts WHERE taskId=? AND revision=?", frame.id, s.task(frame.id).revision)!.content);
+    expect(rendered.data.shots[0].imageId).toBeUndefined();
+    expect(rendered.data.shots[0].videoId).toBeUndefined();
+    expect(rendered.data.shots[0].sourceAudioId).toBeUndefined();
+    expect(rendered.data.previewId).toBeUndefined();
+    expect(s.one<any>("SELECT content FROM artifacts WHERE id=?", original.id).content).toContain("old-image");
+    s.db.run("INSERT INTO media_files VALUES(?,?,?,?,?,?,?,?,?,?)", ["reference", p.id, looks.id, 1, "image", "参考", "/test", "image/png", "{}", "now"]);
+    const revision = s.task(looks.id).revision;
+    s.setVisualReference(p.id, "reference");
+    expect(s.task(looks.id).revision).toBe(revision + 1);
+    expect(s.visualStyle(p.id).referenceImageId).toBe("reference");
+    expect(s.visualRevision(p.id)).toBe(++generation);
+    s.setVisualReference(p.id, "reference");
+    expect(s.task(looks.id).revision).toBe(revision + 1);
+    expect(s.visualRevision(p.id)).toBe(generation);
+  } finally { s.db.close(); }
+});
+
+test("画风 ID 和主提示词不变时，模块版本更新仍使旧定妆失效", () => {
+  const { s, p } = setup();
+  try {
+    s.setVisualTemplate(p.id, "donghua3d");
+    const looks = s.tasks(p.id).find((t) => t.stage === 3)!;
+    s.patchSettings(p.id, { visual: { ...s.visualStyle(p.id), characterModule: "旧人物模块" } });
+    s.setVisualTemplate(p.id, "donghua3d");
+    expect(s.task(looks.id).revision).toBe(looks.revision + 1);
+    expect(s.visualStyle(p.id).characterModule).not.toBe("旧人物模块");
+  } finally { s.db.close(); }
+});
+
+test("仙侠无主参考的正式资产不入库；沈不言可先入库", () => {
+  const { s, p } = setup();
+  s.setVisualTemplate(p.id, "donghua3d");
+  const t = s.tasks(p.id).find((task) => task.stage === 3)!;
+  const bundle = (assets: object[]) =>
+    JSON.stringify({
+      type: "assets",
+      data: { summary: "资产", assets, voices: [] },
+    });
+  const girl = {
+    id: "su-wanqing:child",
+    name: "苏晚晴",
+    kind: "character",
+    prompt: "外观",
+    identity: "幼女",
+    state: "基础",
+    imageId: "img-girl",
+    generationStyleVersion: "xianxia-style-dna-v5",
+  };
+  const shen = {
+    id: "shen-buyan:youth",
+    name: "沈不言",
+    kind: "character",
+    prompt: "外观",
+    identity: "剑修",
+    state: "基础",
+    imageId: "img-shen",
+    generationStyleVersion: "xianxia-style-dna-v5",
+  };
+  s.registerAssets(t, bundle([girl]));
+  expect(s.assetLibrary(p.id)).toHaveLength(0);
+  s.registerAssets(t, bundle([shen]));
+  expect(s.assetLibrary(p.id).map((a: { id: string }) => a.id)).toEqual([
+    "shen-buyan:youth",
+  ]);
+  s.registerAssets(
+    t,
+    bundle([{ ...girl, generationReferenceIds: ["img-shen"] }]),
+  );
+  expect(s.assetLibrary(p.id).map((a: { id: string }) => a.id).sort()).toEqual([
+    "shen-buyan:youth",
+    "su-wanqing:child",
+  ]);
 });

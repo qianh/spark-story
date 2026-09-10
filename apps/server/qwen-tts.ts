@@ -50,7 +50,14 @@ export function qwenOptions(options: Record<string, any>, model = "") {
     ].includes(language)
   )
     throw Error("Qwen 配音语言无效，请使用 Chinese、English 等完整语言名");
-  return { voice, language, instructions: String(options.instructions || "") };
+  return {
+    voice,
+    language,
+    instructions: String(options.instructions || ""),
+    temperature: 0.9,
+    top_p: 1,
+    repetition_penalty: 1.05,
+  };
 }
 let queue: Promise<void> = Promise.resolve();
 export async function runQwenTts(
@@ -102,6 +109,12 @@ export async function runQwenTts(
         "--audio_format",
         "wav",
         "--verbose",
+        "--temperature",
+        o.temperature.toFixed(1),
+        "--top_p",
+        o.top_p.toFixed(1),
+        "--repetition_penalty",
+        String(o.repetition_penalty),
       ];
       if (o.instructions) args.push("--instruct", o.instructions);
       event(`Qwen 正在加载模型并生成 ${o.voice} 配音；首次加载可能较慢`);

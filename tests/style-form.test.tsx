@@ -12,7 +12,8 @@ test("点开画风先展示生成说明，而不是直接列出全部模板", ()
   expect(html).toContain("当前作品画风");
   expect(html).toContain("生成时使用的画风说明");
   expect(html).toContain("定妆、关键帧和视频都只使用作品里锁定的这一份说明");
-  expect(html).toContain("公共画风 DNA");
+  expect(html).toContain("通用画风原文");
+  expect(html).toContain("后面只追加资产类型与内容");
   expect(html).toContain(donghuaStylePrompt.slice(0, 40));
   expect(html).toContain("更换其他画风");
   expect(html).not.toContain("INK &amp; SILENCE");
@@ -59,5 +60,5 @@ test("从模板库点开未应用画风时，可看到说明并应用到当前�
   );
   expect(html).toContain("三维仙侠国漫");
   expect(html).toContain("应用到当前作品");
-  expect(html).toContain("SHARED STYLE DNA");
+  expect(html).toContain("UNIVERSAL XIANXIA STYLE");
 });

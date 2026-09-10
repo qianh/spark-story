@@ -219,7 +219,7 @@ test("资产库版本不可变，跨项目不能引用；新增版本不覆盖�
   const { s, p } = setup();
   try {
     seedSeries(s, p.id);
-    const t = s.tasks(p.id).find((t) => t.stage === 3 && t.episode === 1)!;
+    const t = s.tasks(p.id).find((t) => t.stage === 3 && t.episode === 0)!;
     for (const id of ["img1", "img2"])
       s.db.run("INSERT INTO media_files VALUES(?,?,?,?,?,?,?,?,?,?)", [
         id,
@@ -408,3 +408,25 @@ for (const pass of [true, false]) {
     }
   });
 }
+
+test("全剧定妆只依赖完整故事，分集修改不使其失效，各集关键帧共享同一任务", () => {
+  const { s, p } = setup();
+  try {
+    approveFixture(s, p.id, 0, "概要");
+    approveFixture(s, p.id, 7, JSON.stringify(storyFixture));
+    const looks = s.tasks(p.id).find((t) => t.stage === 3)!;
+    expect(looks.episode).toBe(0);
+    expect(s.canRun(looks)).toBe(true);
+    expect(s.dependencies(looks).map((t) => t.stage)).toEqual([0, 7]);
+    approveFixture(s, p.id, 1, JSON.stringify(planFixture));
+    expect(s.tasks(p.id).filter((t) => t.stage === 3)).toHaveLength(1);
+    const frames = s.tasks(p.id).filter((t) => t.stage === 4);
+    expect(frames).toHaveLength(2);
+    for (const frame of frames) expect(s.dependencies(frame).find((t) => t.stage === 3)?.id).toBe(looks.id);
+    const plan = s.tasks(p.id).find((t) => t.stage === 1)!;
+    s.invalidateAfter(plan);
+    expect(s.task(looks.id)).toEqual(looks);
+    s.invalidateAfter(looks);
+    expect(frames.every((t) => s.task(t.id).revision > t.revision)).toBe(true);
+  } finally { s.db.close(); }
+});

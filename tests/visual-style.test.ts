@@ -6,6 +6,8 @@ import {
   assertCanonicalLooks,
   assertSceneContent,
   characterContentTemplate,
+  characterIdentityRule,
+  emptySceneRule,
   characterSheetModule,
   donghuaStylePrompt,
   donghuaStyleVersion,
@@ -15,29 +17,55 @@ import {
   sceneContentTemplate,
   sceneSheetModule,
   sharedStyleDna,
+  productionVisualPrompt,
+  visualReviewPrompt,
 } from "../packages/visual-style";
 
-test("仙侠模板保存公共画风 DNA 和三套模块", () => {
+test("所有画风的资产内容与验收均遵循选择，不向水墨或Q版注入仙侠三维规则", () => {
+  for (const style of templates) {
+    const prompt = assetLookAgentPrompt(style.prompt, "[]", "全剧登记");
+    expect(prompt).toContain(style.prompt);
+    expect(prompt).toContain("全剧登记");
+    expect(prompt).not.toContain("从文字分镜 assetIds 提取");
+    expect(prompt).not.toContain("不要改写成二维插画、水墨、赛璐璐或Q版");
+    const review = visualReviewPrompt(style);
+    expect(review).toContain(style.prompt);
+    if (style.id !== "donghua3d") expect(review).not.toContain("仙侠");
+  }
+});
+
+test("通用仙侠画风与三种资产类型使用新原文", () => {
   const t = templates.find((x) => x.id === "donghua3d")!;
   expect(t.prompt).toBe(sharedStyleDna);
-  expect(donghuaStylePrompt).toBe(sharedStyleDna);
-  expect(donghuaStylePrompt.startsWith("SHARED STYLE DNA —")).toBe(true);
-  expect(t.description).toContain("公共画风 DNA");
-  expect(donghuaStyleVersion).toBe("xianxia-style-dna-v3");
-  expect(sharedStyleDna).toContain("not live-action documentary");
-  expect(sharedStyleDna).toContain("Photoreal surface detail only as material finish");
-  expect(sharedStyleDna).not.toContain("High-finish 3D photorealistic cinematic");
-  expect(sharedStyleDna).not.toContain("photoreal 3D, not anime");
-  expect(characterSheetModule).toContain("multi-layer traditional xianxia tailoring");
-  expect(propSheetModule).toContain("designed fictional artifact");
-  expect(propSheetModule).toContain("not a museum antique photo");
-  expect(sceneSheetModule).toContain("constructed sect location");
-  expect(sceneSheetModule).toContain("not an existing mountain scenic spot");
+  expect(donghuaStylePrompt.startsWith("UNIVERSAL XIANXIA STYLE\n")).toBe(true);
+  expect(donghuaStyleVersion).toBe("xianxia-universal-v2");
+  expect(sharedStyleDna).toContain("fabric lifted as if by mountain wind even when the figure stands still.");
+  expect(sharedStyleDna).toContain("Air: faint luminous mist, never a dead brown studio void.");
+  expect(sharedStyleDna).not.toMatch(/doll-smooth|taupe-gray|SAME SERIES STAGE|XIANXIA DONGHUA LOOK/);
+  expect(characterSheetModule).toBe("ASSET: character sheet. Full-body standing, three-quarter, feet visible, pale mist studio. One person.");
+  expect(propSheetModule).toBe("ASSET: hero prop. One object, three-quarter, pale mist studio or single dark wood slab.");
+  expect(sceneSheetModule).toBe("ASSET: donghua set plate. Monumental xianxia architecture, flying eaves, dougong, ceremonial stairs, designed mist, empty set.");
 });
 
 const filledContent = characterContentTemplate.replace(/\[[^\]]+\]/g, "none");
 const filledProp = propContentTemplate.replace(/\[[^\]]+\]/g, "none");
 const filledScene = sceneContentTemplate.replace(/\[[^\]]+\]/g, "none");
+
+test("作品保存的画风与模块原样用于生图和审核，不以内部 DNA 覆盖", () => {
+  const style = {
+    id: "donghua3d", version: "user-selected-v1", prompt: "用户选择的画风原文",
+    characterModule: "用户的人物构图", propModule: "用户的道具构图", sceneModule: "用户的场景构图",
+  };
+  for (const kind of ["character", "prop", "scene"]) {
+    const content = kind === "character" ? filledContent : "已确认的资产内容";
+    const result = assetVisualPrompt(style, { kind, prompt: content, identity: "", state: "" });
+    expect(result.startsWith(style.prompt + "\n\n")).toBe(true);
+    expect(result).not.toContain(sharedStyleDna);
+    expect(result).toContain(kind === "character" ? style.characterModule : kind === "prop" ? style.propModule : style.sceneModule);
+  }
+  expect(productionVisualPrompt(style)).toBe(style.prompt);
+  expect(productionVisualPrompt({ id: "donghua3d", prompt: "STYLE LOCK — 用户原文" })).toBe("STYLE LOCK — 用户原文");
+});
 
 test("角色定妆按 DNA + 人物模块 + CONTENT 拼接，不改 DNA", () => {
   const content = filledContent.replace(
@@ -56,7 +84,7 @@ test("角色定妆按 DNA + 人物模块 + CONTENT 拼接，不改 DNA", () => {
     },
   );
   expect(prompt).toBe(
-    `${sharedStyleDna}\n\n${characterSheetModule}\n\n${content}`,
+    `${sharedStyleDna}\n\n${characterSheetModule}\n\n${characterIdentityRule}\n${content}`,
   );
   expect(prompt).not.toContain("不得重复的身份元数据");
   expect(() =>
@@ -79,6 +107,7 @@ test("场景和道具用同一 DNA，不用人物浅景模块", () => {
     },
   );
   expect(scene.startsWith(sharedStyleDna)).toBe(true);
+  expect(scene).not.toContain("SAME SERIES STAGE");
   expect(scene).toContain(sceneSheetModule);
   expect(scene).toContain(filledScene);
   expect(scene).not.toContain("CHARACTER SHEET");
@@ -107,21 +136,13 @@ test("场景和道具用同一 DNA，不用人物浅景模块", () => {
   ).toThrow(/用词/);
 });
 
-test("场景允许在 CONTENT 末行加入远处人物，不换回人物模块", () => {
-  const withFigure = `${filledScene}\nOne distant figure in series costume, small in frame, not a portrait.`;
-  expect(() => assertSceneContent(withFigure)).not.toThrow();
-  const prompt = assetVisualPrompt(
-    { id: "donghua3d", prompt: donghuaStylePrompt },
-    {
-      kind: "scene",
-      promptFormat: "scene-content-v1",
-      prompt: withFigure,
-      identity: "",
-      state: "",
-    },
-  );
-  expect(prompt).toContain(sceneSheetModule);
-  expect(prompt).not.toContain("CHARACTER SHEET");
+test("场景定妆拒绝旧版远处人物例外与有人的 People 字段", () => {
+  expect(() => assertSceneContent(`${filledScene}\nOne distant figure in series costume, small in frame, not a portrait.`)).toThrow();
+  expect(() => assertSceneContent(filledScene.replace("People: none", "People: none except one cultivator"))).toThrow();
+  const prompt = assetVisualPrompt({ id: "donghua3d", prompt: donghuaStylePrompt }, {
+    kind: "scene", promptFormat: "scene-content-v1", prompt: filledScene, identity: "", state: "",
+  });
+  expect(prompt).toContain(emptySceneRule);
 });
 
 test("完整画面描述只拼接一次，不重复身份状态，不添加剧情天气", () => {
@@ -184,6 +205,84 @@ test("资产 Agent 按登记填写模板，不写本集天气", () => {
   expect(p).toContain("sect artifact");
   expect(p).toContain("photorealistic landscape");
   expect(p).toContain("museum antique");
+  expect(p).toContain("不写画风");
+});
+
+test("CONTENT 禁止再写画风句", () => {
+  expect(() =>
+    assetVisualPrompt(
+      { id: "donghua3d", prompt: donghuaStylePrompt },
+      {
+        kind: "character",
+        promptFormat: "character-content-v1",
+        prompt: filledContent
+          .replace("Subject: none", "Subject: youth")
+          .replace("Face: none", "Face: cinematic donghua 国漫脸"),
+        identity: "",
+        state: "",
+      },
+    ),
+  ).toThrow(/画风|CONTENT/);
+  expect(() =>
+    assetVisualPrompt(
+      { id: "donghua3d", prompt: donghuaStylePrompt },
+      {
+        kind: "prop",
+        promptFormat: "prop-content-v1",
+        prompt: filledProp.replace("Item: none", "Item: cinematic donghua sword"),
+        identity: "",
+        state: "",
+      },
+    ),
+  ).toThrow(/画风|CONTENT/);
+  expect(() =>
+    assetVisualPrompt(
+      { id: "donghua3d", prompt: donghuaStylePrompt },
+      {
+        kind: "scene",
+        promptFormat: "scene-content-v1",
+        prompt: filledScene.replace(
+          "Place: none",
+          "Place: cinematic donghua mountain photo",
+        ),
+        identity: "",
+        state: "",
+      },
+    ),
+  ).toThrow(/画风|CONTENT/);
+});
+
+test("窥伺影只改人设，仍走同一套锁和片场", () => {
+  const content = filledContent
+    .replace(
+      "Subject: none",
+      "Subject: non-human grey-gold skinned watcher spirit",
+    )
+    .replace(
+      "Face: none",
+      "Face: grey-gold skin, empty eye sockets, no pupils, still in-character",
+    )
+    .replace(
+      "- Outer robe: none",
+      "- Outer robe: scorched-gold bone-lacquer robe",
+    );
+  const prompt = assetVisualPrompt(
+    { id: "donghua3d", prompt: donghuaStylePrompt },
+    {
+      name: "窥伺影",
+      kind: "character",
+      promptFormat: "character-content-v1",
+      prompt: content,
+      identity: "空脸窥伺影",
+      state: "基础定妆",
+    },
+  );
+  expect(prompt).toBe(
+    `${sharedStyleDna}\n\n${characterSheetModule}\n\n${characterIdentityRule}\n${content}`,
+  );
+  expect(prompt).toContain("grey-gold");
+  expect(prompt).toContain("empty eye sockets");
+  expect(prompt).toContain("scorched-gold bone-lacquer");
 });
 
 test("定妆验收拦住雨夜、高烧、闭眼", () => {
