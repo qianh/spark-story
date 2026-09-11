@@ -531,8 +531,7 @@ function App() {
                         {![1, 2, 8].includes(task.stage) && (
                           <>
                             {" "}
-                            <span className="divider">/</span> 返工 {task.round}{" "}
-                            / 3
+                            <span className="divider">/</span> {task.stage === 3 ? `自动重试 ${task.round} 轮` : `返工 ${task.round} / 3`}
                           </>
                         )}
                       </p>

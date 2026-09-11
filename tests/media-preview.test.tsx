@@ -8,6 +8,7 @@ import {
 } from "../packages/media";
 import {
   ArtifactLibrary,
+  AssetTextDialog,
   BundleView,
   MediaGenerationProgress,
   MediaLibrary,
@@ -430,9 +431,9 @@ test("定妆提示词默认收起，需点开查看", () => {
     />,
   );
   expect(html).toContain("查看提示词");
-  expect(html).toContain("<details");
-  expect(html).toContain("<summary>查看提示词</summary>");
-  expect(html).toContain(prompt);
+  expect(html).not.toContain("<details");
+  expect(html).not.toContain("<summary>查看提示词</summary>");
+  expect(html).not.toContain(prompt);
 });
 
 test("声音试听展示声音卡、试听稿、文件时长和再听一条", () => {
@@ -579,4 +580,42 @@ test("全剧其他角色待配音不阻塞当前批次进度，声音卡仍保�
   expect(html).toContain("苏晚晴");
   expect(html).toContain("后续按需补齐");
   expect(bundle.data.voices).toHaveLength(2);
+});
+
+test("定妆卡片显示审核锁，不通过原因点开查看", () => {
+  const html = renderToStaticMarkup(<BundleView files={[]} onSave={() => {}} busy={false} content={JSON.stringify({
+    type: "assets", data: { summary: "逐张审核", voices: [], assets: [
+      { id: "a", name: "已通过玉牌", kind: "prop", prompt: "玉牌", imageId: "img-a", generationPrompt: "玉牌", imageReview: { imageId: "img-a", prompt: "玉牌", pass: true, feedback: "通过" } },
+      { id: "b", name: "待修正玉牌", kind: "prop", prompt: "玉牌", imageId: "img-b", generationPrompt: "玉牌", imageReview: { imageId: "img-b", prompt: "玉牌", pass: false, feedback: "边缘被裁切" } },
+    ] },
+  })} />);
+  expect(html).toContain("已通过 · 已锁定");
+  expect(html).toContain("待自动重试");
+  expect(html).toContain("不通过原因");
+  expect(html).not.toContain("待自动重试：边缘被裁切");
+  expect(html).not.toContain("边缘被裁切");
+  expect(html).toContain("1 / 2");
+});
+
+test("不通过原因与提示词弹框展示正文", () => {
+  const review = renderToStaticMarkup(
+    <AssetTextDialog title="不通过原因" onClose={() => {}}>
+      <p>边缘被裁切</p>
+    </AssetTextDialog>,
+  );
+  expect(review).toContain('role="dialog"');
+  expect(review).toContain("不通过原因");
+  expect(review).toContain("边缘被裁切");
+  expect(review).toContain("关闭");
+  const prompt = renderToStaticMarkup(
+    <AssetTextDialog title="提示词" onClose={() => {}}>
+      <strong>本图生成时的画风与要求</strong>
+      <p>竖屏9:16单人全身定妆</p>
+      <strong>资产内容设定</strong>
+      <p>沈不言青年定妆</p>
+    </AssetTextDialog>,
+  );
+  expect(prompt).toContain("提示词");
+  expect(prompt).toContain("本图生成时的画风与要求");
+  expect(prompt).toContain("竖屏9:16单人全身定妆");
 });

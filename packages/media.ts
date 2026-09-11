@@ -71,6 +71,8 @@ export function voiceInBatch(data: { voiceBatchAssetIds?: string[]; assets?: { i
 
 export const assetPlanSchema = z.object({
   summary: z.string(),
+  lookPlanRevision: z.number().optional(),
+  extendLookPlan: z.boolean().optional(),
   // Scheduling metadata only; all assets and voices remain series-owned.
   voiceBatchAssetIds: z.array(z.string()).optional(),
   assets: z
@@ -92,6 +94,14 @@ export const assetPlanSchema = z.object({
         state: z.string().default(""),
         imageId: ref.optional(),
         generationPrompt: z.string().optional(),
+        imageRepairFeedback: z.string().optional(),
+        imageReview: z.object({
+          policyVersion: z.number().optional(),
+          imageId: z.string(),
+          prompt: z.string(),
+          pass: z.boolean(),
+          feedback: z.string(),
+        }).optional(),
         generationStyleVersion: z.string().optional(),
         generationStyleKey: z.string().optional(),
         generationReferenceIds: z.array(z.string()).optional(),
@@ -288,4 +298,14 @@ export function mediaGenerationProgress({
       ? "正在规划需要生成的产物"
       : `产物 ${done} / ${items.length} 已呈现`;
   return { phase, items, done, total: items.length, current, label };
+}
+
+/** Approval belongs to one exact generated image and its saved prompt. */
+export function isAssetImageLocked(asset: {
+  imageId?: string; generationPrompt?: string;
+  imageReview?: { imageId: string; prompt: string; pass: boolean };
+}) {
+  return !!asset.imageId && asset.imageReview?.pass === true &&
+    asset.imageReview.imageId === asset.imageId &&
+    asset.imageReview.prompt === (asset.generationPrompt || "");
 }

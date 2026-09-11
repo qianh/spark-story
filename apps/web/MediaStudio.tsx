@@ -1,4 +1,4 @@
-import { voiceInBatch } from "../../packages/media";
+import { voiceInBatch, isAssetImageLocked } from "../../packages/media";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownContent } from "./MarkdownContent";
@@ -155,6 +155,80 @@ function MediaLightbox({
     </div>,
     document.body,
   );
+}
+function assetReviewFailed(asset: any) {
+  return (
+    asset.imageReview?.pass === false &&
+    asset.imageReview.imageId === asset.imageId
+  );
+}
+function assetPromptContent(asset: any) {
+  return (
+    <>
+      {asset.generationPrompt ? (
+        <>
+          <strong>本图生成时的画风与要求</strong>
+          <p>{asset.generationPrompt}</p>
+          <strong>资产内容设定</strong>
+        </>
+      ) : null}
+      <p>{asset.prompt}</p>
+    </>
+  );
+}
+export function AssetTextDialog({
+  title,
+  children,
+  onClose,
+}: {
+  title: string;
+  children: React.ReactNode;
+  onClose: () => void;
+}) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = overflow;
+      document.removeEventListener("keydown", onKey);
+      prev?.focus?.();
+    };
+  }, [onClose]);
+  const dialog = (
+    <div
+      className="modal-overlay asset-text-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="asset-text-dialog-title"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <section className="modal wide asset-text-dialog">
+        <button
+          ref={closeRef}
+          type="button"
+          className="modal-close icon-button"
+          aria-label="关闭"
+          onClick={onClose}
+        >
+          <X size={20} />
+        </button>
+        <h2 id="asset-text-dialog-title">{title}</h2>
+        <div className="asset-text-dialog-body">{children}</div>
+      </section>
+    </div>
+  );
+  return typeof document === "undefined"
+    ? dialog
+    : createPortal(dialog, document.body);
 }
 export function MediaPreview({
   id,
@@ -692,10 +766,17 @@ export function BundleView({
   const original = mediaBundle(content);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<any>(null);
+  const [note, setNote] = useState<
+    { kind: "review" | "prompt"; assetId: string } | null
+  >(null);
   if (!original)
     return <MarkdownContent content={content} rules={production} />;
   const bundle = editing ? draft : original,
     data = bundle.data;
+  const noteAsset =
+    note && Array.isArray(data.assets)
+      ? data.assets.find((a: any) => a.id === note.assetId)
+      : null;
   const update = (fn: (data: any) => void) => {
     const next = structuredClone(draft);
     fn(next.data);
@@ -739,6 +820,7 @@ export function BundleView({
       {bundle.type === "assets" ? (
         <>
           <p className="muted">全剧共享定妆：先出当前集用到的角色、场景与道具；后集新变体再补。所有集引用同一份已确认版本。</p>
+          <p className="muted">已通过并锁定 {data.assets.filter(isAssetImageLocked).length} / {data.assets.length} 张；自动执行只处理未通过图片。已锁定图片可通过单张重新生成替换。</p>
           <div className="bundle-asset-grid">
             {lookSheetAssets(data.assets).map((asset: any) => {
               const i = data.assets.findIndex((row: any) => row.id === asset.id);
@@ -755,37 +837,56 @@ export function BundleView({
                     }
                   </span>
                 </h3>
-                {editing ? (
-                  <>
-                    <textarea
-                      value={asset.prompt}
-                      onChange={(e) =>
-                        update((d) => {
-                          d.assets[i].prompt = e.target.value;
-                          delete d.assets[i].imageId;
-                          delete d.assets[i].generationPrompt;
-                          delete d.assets[i].generationStyleVersion;
-                        })
+                {isAssetImageLocked(asset) && <span className="tag">已通过 · 已锁定</span>}
+                {assetReviewFailed(asset) && <span className="tag">待自动重试</span>}
+                <div className="asset-notes">
+                  {assetReviewFailed(asset) && (
+                    <button
+                      type="button"
+                      className="asset-note asset-note-reject"
+                      onClick={() =>
+                        setNote({ kind: "review", assetId: asset.id })
                       }
-                    />
-                    {selectFile(
-                      asset.imageId,
-                      (id) =>
-                        update((d) => {
-                          d.assets[i].imageId = id || undefined;
-                          delete d.assets[i].generationPrompt;
-                          delete d.assets[i].generationStyleVersion;
-                        }),
-                      "image",
-                    )}
-                  </>
-                ) : (
-                  <details className="asset-prompt">
-                    <summary>查看提示词</summary>
-                    {asset.generationPrompt && <><strong>本图生成时的画风与要求</strong><p>{asset.generationPrompt}</p><strong>资产内容设定</strong></>}
-                    <p>{asset.prompt}</p>
-                  </details>
-                )}
+                    >
+                      不通过原因
+                    </button>
+                  )}
+                  {editing ? (
+                    <>
+                      <textarea
+                        value={asset.prompt}
+                        onChange={(e) =>
+                          update((d) => {
+                            d.assets[i].prompt = e.target.value;
+                            delete d.assets[i].imageId;
+                            delete d.assets[i].generationPrompt;
+                            delete d.assets[i].generationStyleVersion;
+                          })
+                        }
+                      />
+                      {selectFile(
+                        asset.imageId,
+                        (id) =>
+                          update((d) => {
+                            d.assets[i].imageId = id || undefined;
+                            delete d.assets[i].generationPrompt;
+                            delete d.assets[i].generationStyleVersion;
+                          }),
+                        "image",
+                      )}
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="asset-note"
+                      onClick={() =>
+                        setNote({ kind: "prompt", assetId: asset.id })
+                      }
+                    >
+                      查看提示词
+                    </button>
+                  )}
+                </div>
                 {onRetryAsset && (
                   <button
                     className="text-button asset-retry"
@@ -1368,6 +1469,18 @@ export function BundleView({
             </section>
           )}
         </>
+      )}
+      {noteAsset && note && (
+        <AssetTextDialog
+          title={note.kind === "review" ? "不通过原因" : "提示词"}
+          onClose={() => setNote(null)}
+        >
+          {note.kind === "review" ? (
+            <p>{noteAsset.imageReview?.feedback}</p>
+          ) : (
+            assetPromptContent(noteAsset)
+          )}
+        </AssetTextDialog>
       )}
       {editing && (
         <div className="bundle-save">

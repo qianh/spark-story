@@ -3,7 +3,7 @@ import { templates } from "../packages/domain";
 import {
   assetLookAgentPrompt,
   assetVisualPrompt,
-  assertCanonicalLooks,
+  generationReviewPrompt,
   assertSceneContent,
   characterContentTemplate,
   characterIdentityRule,
@@ -11,7 +11,6 @@ import {
   characterSheetModule,
   donghuaStylePrompt,
   donghuaStyleVersion,
-  lookPlotIssues,
   propContentTemplate,
   propSheetModule,
   sceneContentTemplate,
@@ -133,12 +132,12 @@ test("场景和道具用同一 DNA，不用人物浅景模块", () => {
         "Near camera: simple ordinary tourist gate at a real temple",
       ),
     ),
-  ).toThrow(/用词/);
+  ).not.toThrow();
 });
 
-test("场景定妆拒绝旧版远处人物例外与有人的 People 字段", () => {
+test("场景模板检查格式，人物要求交由实际生成提示词审核", () => {
   expect(() => assertSceneContent(`${filledScene}\nOne distant figure in series costume, small in frame, not a portrait.`)).toThrow();
-  expect(() => assertSceneContent(filledScene.replace("People: none", "People: none except one cultivator"))).toThrow();
+  expect(() => assertSceneContent(filledScene.replace("People: none", "People: none except one cultivator"))).not.toThrow();
   const prompt = assetVisualPrompt({ id: "donghua3d", prompt: donghuaStylePrompt }, {
     kind: "scene", promptFormat: "scene-content-v1", prompt: filledScene, identity: "", state: "",
   });
@@ -208,7 +207,7 @@ test("资产 Agent 按登记填写模板，不写本集天气", () => {
   expect(p).toContain("不写画风");
 });
 
-test("CONTENT 禁止再写画风句", () => {
+test("CONTENT 格式检查不以风格关键词替代实际提示词审核", () => {
   expect(() =>
     assetVisualPrompt(
       { id: "donghua3d", prompt: donghuaStylePrompt },
@@ -222,7 +221,7 @@ test("CONTENT 禁止再写画风句", () => {
         state: "",
       },
     ),
-  ).toThrow(/画风|CONTENT/);
+  ).not.toThrow();
   expect(() =>
     assetVisualPrompt(
       { id: "donghua3d", prompt: donghuaStylePrompt },
@@ -234,7 +233,7 @@ test("CONTENT 禁止再写画风句", () => {
         state: "",
       },
     ),
-  ).toThrow(/画风|CONTENT/);
+  ).not.toThrow();
   expect(() =>
     assetVisualPrompt(
       { id: "donghua3d", prompt: donghuaStylePrompt },
@@ -249,7 +248,7 @@ test("CONTENT 禁止再写画风句", () => {
         state: "",
       },
     ),
-  ).toThrow(/画风|CONTENT/);
+  ).not.toThrow();
 });
 
 test("窥伺影只改人设，仍走同一套锁和片场", () => {
@@ -285,32 +284,16 @@ test("窥伺影只改人设，仍走同一套锁和片场", () => {
   expect(prompt).toContain("scorched-gold bone-lacquer");
 });
 
-test("定妆验收拦住雨夜、高烧、闭眼", () => {
-  expect(
-    lookPlotIssues({
-      name: "雨巷",
-      prompt: "青石巷，两侧旧墙，地面可见，清晰日光。",
-      identity: "雨巷",
-      state: "基础外观。建筑完好干燥。",
-    }),
-  ).toEqual([]);
-  const fever = lookPlotIssues({
-    name: "病弱幼女",
-    prompt: filledContent,
-    identity: "未命名病弱幼女",
-    state: "高烧额红，双眼紧闭",
-  });
-  expect(fever.join("；")).toMatch(/高烧|额红|双眼紧闭/);
-  expect(() =>
-    assertCanonicalLooks([
-      {
-        name: "窥伺影",
-        prompt: "人形暗影立于秋雨湿雾中。",
-        identity: "空脸窥伺影",
-        state: "立于秋雨中。",
-      },
-    ]),
-  ).toThrow(/制作验收/);
+test("验收标准来自实际生成提示词，不追加禁词与默认画风", () => {
+  const source = "水墨山门，湿雾环绕。幼女身量，抱起来不沉。";
+  const review = generationReviewPrompt(source);
+  expect(review).toContain(source);
+  expect(review).toContain("唯一内容验收依据");
+  expect(review).toContain("逐项引用");
+  expect(review).toContain("先解析提示词自身声明的优先级");
+  expect(review).toContain("已被覆盖的通用示例不再作为失败依据");
+  expect(review).not.toContain("一律失败");
+  expect(generationReviewPrompt("")).toContain("无法核验");
 });
 
 test("旧版三类 CONTENT 可继续用于定妆和单张重生成", () => {
@@ -343,4 +326,26 @@ Camera: wide establishing`;
       expect(output).toContain("grey granite");
     }
   }
+});
+
+test("CONTENT 简写标题与空行不影响完整字段的格式校验", () => {
+  for (const [kind, format, content, heading] of [
+    ["character", "character-content-v1", filledContent, "CONTENT — CHARACTER (fill per role):"],
+    ["prop", "prop-content-v1", filledProp, "CONTENT — PROP (fill per item):"],
+    ["scene", "scene-content-v1", filledScene, "CONTENT — SCENE (fill per location):"],
+  ] as const) {
+    expect(() => assetVisualPrompt({ id: "donghua3d", prompt: donghuaStylePrompt }, {
+      kind, promptFormat: format,
+      prompt: content.replace(heading, `CONTENT — ${kind.toUpperCase()}:`).replaceAll("\n", "\n\n"),
+      identity: "", state: "",
+    })).not.toThrow();
+  }
+});
+
+test("灵鸟角色的单主体声明保留物种，不强制写成人", () => {
+  const content = filledContent.replace("Only this one person in frame.", "Only this one bird in frame.");
+  const result = assetVisualPrompt({ id: "donghua3d", prompt: donghuaStylePrompt }, {
+    kind: "character", promptFormat: "character-content-v1", prompt: content, identity: "灵鸟", state: "常态",
+  });
+  expect(result).toContain("Only this one bird in frame.");
 });

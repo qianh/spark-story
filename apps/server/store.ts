@@ -328,7 +328,7 @@ export class Store {
       const data = bundle.data as Record<string, any>;
       const clean = (item: Record<string, any>) => {
         const copy = { ...item };
-        for (const key of ["imageId", "videoId", "sourceAudioId", "libraryId", "baseLibraryId", "candidates", "candidateSpecs", "selectedCandidateId", "generationPrompt", "generationStyleVersion", "generationStyleKey", "generationReferenceIds", "draftImage"])
+        for (const key of ["imageReview", "imageRepairFeedback", "imageId", "videoId", "sourceAudioId", "libraryId", "baseLibraryId", "candidates", "candidateSpecs", "selectedCandidateId", "generationPrompt", "generationStyleVersion", "generationStyleKey", "generationReferenceIds", "draftImage"])
           delete copy[key];
         return copy;
       };
@@ -398,7 +398,11 @@ export class Store {
         "UPDATE tasks SET revision=?,round=0,status='ready',instruction='',error='',updatedAt=? WHERE id=?",
         [next, now(), t.id],
       );
-      if (art) this.publish(t.id, next, art.content);
+      if (art) {
+        const bundle = mediaBundle(art.content);
+        if (bundle?.type === "assets") bundle.data.extendLookPlan = true;
+        this.publish(t.id, next, bundle ? JSON.stringify(bundle) : art.content);
+      }
     })();
     this.event(
       t.projectId,

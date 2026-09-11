@@ -405,8 +405,9 @@ test("图片审核最多三项并发，共享批次进度且全部完成后才�
   expect(f.store.task(t.id).status).toBe("awaiting_user");
   expect(peak).toBe(3);
   expect(callIds.size).toBe(1);
-  expect(summaries).toBe(1);
+  expect(summaries).toBe(0);
   expect(runtime.connections.size).toBe(0);
+  for (const a of assets) delete (a as any).imageReview;
   fail = true;
   summaries = 0;
   completed = 0;
@@ -431,12 +432,19 @@ test("定妆→动态分镜→视频→音乐字幕成片完整流程，产物�
   for (const role of ["主模型", "文本模型"])
     f.store.db.run("INSERT INTO bindings VALUES(?,?)", [role, cli.id]);
   const generator = async (_c: Connection, prompt: string) => {
+    if (prompt.startsWith("你是外观登记 Agent"))
+      return JSON.stringify({ type: "look-registry", entities: [{
+        id: "hero", name: "主角", kind: "character", variants: [{
+          id: "default", name: "日常", kind: "costume", identity: "主角",
+          form: "绿色外套", source: "故事设定",
+        }],
+      }] });
     if (prompt.startsWith("你是角色与资产 Agent"))
       return JSON.stringify({
         summary: "定妆方案",
         assets: [
           {
-            id: "hero",
+            id: "hero:default",
             name: "主角",
             kind: "character",
             prompt: "绿色外套的动漫角色",
@@ -456,7 +464,7 @@ test("定妆→动态分镜→视频→音乐字幕成片完整流程，产物�
             duration: 1,
             beatId: "B1",
             sceneId: "scene1",
-            assetIds: ["hero"],
+            assetIds: ["hero:default"],
             dialogue: "你好",
             speaker: "主角",
             voice: "alloy",
@@ -469,7 +477,7 @@ test("定妆→动态分镜→视频→音乐字幕成片完整流程，产物�
             duration: 1,
             beatId: "B2",
             sceneId: "scene1",
-            assetIds: ["hero"],
+            assetIds: ["hero:default"],
             dialogue: "",
             route: "separate",
           },
@@ -725,7 +733,7 @@ test("定妆方案解析后立刻写入预览检查点，不等待第一张图",
   expect(images).toBe(2);
 });
 
-test("定妆方案含本集雨夜则验收失败，不拿去生图", async () => {
+test("定妆不使用额外天气禁词拦截，提交实际提示词生图", async () => {
   const f = await fixture();
   const { MediaPipeline } = await import("../apps/server/media-pipeline");
   const task = f.store.tasks(f.project.id).find((t) => t.stage === 3)!;
@@ -749,7 +757,7 @@ test("定妆方案含本集雨夜则验收失败，不拿去生图", async () =>
     media: {
       connection: () => f.c,
       ensure: async () => {
-        throw new Error("should not generate");
+        throw new Error("reached image generation");
       },
     },
   } as unknown as Runtime);
@@ -763,7 +771,7 @@ test("定妆方案含本集雨夜则验收失败，不拿去生图", async () =>
       null,
       new AbortController().signal,
     ),
-  ).rejects.toThrow(/制作验收/);
+  ).rejects.toThrow("reached image generation");
 });
 
 test("语音连接缺失时先保存定妆图，补齐连接后复用图片继续试听", async () => {

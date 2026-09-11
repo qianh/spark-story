@@ -1,5 +1,5 @@
 import { timingManifest } from "../packages/production";
-import { assetPlanSchema, voiceSampleSchema } from "../packages/media";
+import { assetPlanSchema, voiceSampleSchema, isAssetImageLocked } from "../packages/media";
 import { mergeVoiceCards } from "../apps/server/voice-casting";
 import { expect, test } from "bun:test";
 import { Store } from "../apps/server/store";
@@ -24,15 +24,15 @@ function setup(
 ) {
   const store = new Store(":memory:");
   const project = store.createProject({ name: "画风全流程", source: "信物传承", inputType: "idea", aspect: "16:9", template, budget: 0 });
-  const calls: { prompt: string; options: any; refs: string[] }[] = [];
+  const calls: { prompt: string; options: any; refs: string[]; force?: boolean }[] = [];
   const stats = { inflight: 0, peak: 0 };
   const pipeline = new MediaPipeline({
     store,
     call: async (_task: unknown, _attempt: unknown, _connection: unknown, prompt: string) => JSON.stringify(response?.(prompt)),
-    media: { files: { get: () => ({path:"test-image.png"}) }, connection: () => ({}), ensure: async (_task: string, _revision: number, _kind: string, prompt: string, refs: string[], options: any) => {
+    media: { files: { get: () => ({path:"test-image.png"}) }, connection: () => ({}), ensure: async (_task: string, _revision: number, _kind: string, prompt: string, refs: string[], options: any, _signal?: AbortSignal, _progress?: unknown, force?: boolean) => {
       stats.inflight++;
       stats.peak = Math.max(stats.peak, stats.inflight);
-      const n = calls.push({ prompt, options, refs });
+      const n = calls.push({ prompt, options, refs, force });
       if (delayMs) await Bun.sleep(delayMs);
       stats.inflight--;
       return `image-${n}`;
@@ -292,6 +292,7 @@ test("已确认定妆可开新修订追加后集，保留已有资产", async ()
       )!.content,
     );
     expect(copied.data.assets.map((a: { id: string }) => a.id)).toEqual(["token:whole"]);
+    expect(copied.data.extendLookPlan).toBe(true);
   } finally {
     f.store.db.close();
   }
@@ -331,5 +332,176 @@ test("声音只按当前制作需要排队，保存仍是全剧并保留其他�
     approveFixture(f.store, f.project.id, 2, '```production-json\n' + JSON.stringify(manifest) + '\n```', 1);
     expect(f.pipeline.voiceBatchAssets(task, data).map(a => a.name)).toEqual(["苏晚晴"]);
     expect(data.assets).toHaveLength(2);
+  } finally { f.store.db.close(); }
+});
+
+for (const invalid of [false, true]) test(`旧故事缺少外观登记时先补登记再定妆（无效返回=${invalid}）`, async () => {
+  const prompts: string[] = [];
+  const registry = { type: "look-registry", entities: [{ id: "token", name: "信物", kind: "prop", variants: [{ id: "whole", name: "完整", kind: "form", identity: "玉牌", form: "完整", source: "故事设定" }] }] };
+  const f = setup("cel", (prompt) => {
+    prompts.push(prompt);
+    if (prompt.startsWith("你是外观登记 Agent")) return invalid ? { type: "look-registry", entities: [] } : registry;
+    return { summary: "定妆", assets: [prop()], voices: [] };
+  });
+  try {
+    approveFixture(f.store, f.project.id, 0, "概要");
+    approveFixture(f.store, f.project.id, 7, JSON.stringify(storyFixture));
+    if (invalid) {
+      await expect(f.produce(null)).rejects.toThrow("外观登记");
+      expect(f.calls).toHaveLength(0);
+      expect(f.store.lookRegistry(f.project.id)).toBeUndefined();
+      expect(prompts).toHaveLength(1);
+    } else {
+      await f.produce(null);
+      expect(prompts[0]).toStartWith("你是外观登记 Agent");
+      expect(prompts[1]).toContain("本批必须提供：token:whole");
+      expect(f.store.lookRegistry(f.project.id)).toEqual(registry);
+      await f.produce(f.checkpoint());
+      expect(prompts.filter(p => p.startsWith("你是外观登记 Agent"))).toHaveLength(1);
+    }
+  } finally { f.store.db.close(); }
+});
+
+test("空定妆结果提示可操作错误而非底层数组校验", async () => {
+  const f = setup("cel", () => ({ summary: "无新项", assets: [], voices: [] }));
+  try { await expect(f.produce(null)).rejects.toThrow("未返回任何定妆资产"); }
+  finally { f.store.db.close(); }
+});
+
+test("单张审核使用该候选实际生成提示词，不用已选旧图或额外场景标准", async () => {
+  const prompts: string[] = [];
+  const f = setup("cel", prompt => {
+    prompts.push(prompt);
+    return { pass: true, feedback: "符合实际提示词" };
+  });
+  try {
+    f.store.binding = () => ({} as Connection);
+    const task = f.store.tasks(f.project.id).find(t => t.stage === 3)!;
+    const asset = assetPlanSchema.parse({ summary: "候选", assets: [{
+      ...prop(), imageId: "old", generationPrompt: "旧图使用的提示词",
+      candidateSpecs: { candidate: { prompt: "湿雾中的玉牌，背景有路人", styleKey: "test", styleVersion: "test", referenceIds: [] } },
+    }] }).assets[0];
+    await f.pipeline.reviewAssetImage(task, asset, "candidate", [], new AbortController().signal);
+    expect(prompts[0]).toContain("湿雾中的玉牌，背景有路人");
+    expect(prompts[0]).not.toContain("旧图使用的提示词");
+    expect(prompts[0]).not.toContain("场景与建筑必须完全无人");
+    expect(prompts[0]).toContain("逐项引用");
+  } finally { f.store.db.close(); }
+});
+
+test("定妆登记中的体型比喻和湿雾不触发独立禁词验收", async () => {
+  const f = setup("cel");
+  try {
+    const result = await f.produce({ type: "assets", data: { summary: "定妆", voices: [], assets: [{
+      ...prop(), identity: "幼女身量，抱起来不沉", state: "湿雾中的玉牌",
+    }] } });
+    expect(f.calls).toHaveLength(1);
+    expect((result.data as any).assets[0].identity).toBe("幼女身量，抱起来不沉");
+  } finally { f.store.db.close(); }
+});
+
+test("逐张审核落盘，超过三轮只重做失败图片，全部通过才交给用户", async () => {
+  const reviewed: string[] = [];
+  let planning = 0;
+  const f = setup("cel", prompt => {
+    if (prompt.startsWith("你是角色与资产 Agent")) {
+      planning++;
+      return { summary: "两张", assets: [prop("a:whole"), prop("b:whole")], voices: [] };
+    }
+    const name = prompt.match(/产物名称：(image-\d+)/)?.[1];
+    if (name) {
+      expect(prompt).not.toContain("产物上下文：");
+      expect(prompt).not.toContain("任务要求：");
+      reviewed.push(name);
+      return { pass: name === "image-1" || reviewed.length >= 6, feedback: "玉牌边缘需要完整" };
+    }
+    return { pass: true, feedback: "通过" };
+  });
+  try {
+    const runtime = f.pipeline.runtime as any;
+    runtime.media.files.get = (id: string) => ({ id, kind: "image", name: id, path: id, metadata: "{}" });
+    runtime.media.files.inspectFrames = async (id: string) => [id];
+    runtime.reviewBatch = async (_t: any, _m: any, signal: AbortSignal, run: any) => run(undefined, signal);
+    const task = f.store.tasks(f.project.id).find(t => t.stage === 3)!;
+    await f.pipeline.execute(task, "test", {} as Connection, {} as Connection, [], new AbortController().signal);
+    expect(f.store.task(task.id).status).toBe("awaiting_user");
+    expect(planning).toBe(1);
+    expect(reviewed.filter(id => id === "image-1")).toHaveLength(1);
+    expect(f.calls).toHaveLength(6);
+    expect(f.calls.slice(2).every(c => c.force)).toBe(true);
+    expect(f.calls[2].prompt).toContain("玉牌边缘需要完整");
+    const saved = f.checkpoint();
+    expect(saved.data.assets.every((a: any) => a.imageReview?.pass)).toBe(true);
+    const before = reviewed.length;
+    await f.pipeline.execute(f.store.task(task.id), "resume", {} as Connection, {} as Connection, [], new AbortController().signal);
+    expect(reviewed).toHaveLength(before);
+    expect(f.calls).toHaveLength(6);
+  } finally { f.store.db.close(); }
+});
+
+test("审核中途断线仍保存已通过锁，恢复只审核剩余图片", async () => {
+  const reviewed: string[] = [];
+  let disconnected = true;
+  const f = setup("cel", prompt => {
+    if (prompt.startsWith("你是角色与资产 Agent")) return { summary: "两张", assets: [prop("a:whole"), prop("b:whole")], voices: [] };
+    const name = prompt.match(/产物名称：(image-\d+)/)?.[1];
+    if (name) {
+      reviewed.push(name);
+      if (name === "image-2" && disconnected) throw Error("模拟审核连接断开");
+    }
+    return { pass: true, feedback: "通过" };
+  });
+  try {
+    const runtime = f.pipeline.runtime as any;
+    runtime.media.files.get = (id: string) => ({ id, kind: "image", name: id, path: id, metadata: "{}" });
+    runtime.media.files.inspectFrames = async (id: string) => [id];
+    runtime.reviewBatch = async (_t: any, _m: any, signal: AbortSignal, run: any) => run(undefined, signal);
+    const task = f.store.tasks(f.project.id).find(t => t.stage === 3)!;
+    await f.pipeline.execute(task, "test", {} as Connection, {} as Connection, [], new AbortController().signal);
+    expect(f.store.task(task.id).status).toBe("provider_blocked");
+    expect(f.checkpoint().data.assets[0].imageReview.pass).toBe(true);
+    disconnected = false;
+    await f.pipeline.execute(f.store.task(task.id), "resume", {} as Connection, {} as Connection, [], new AbortController().signal);
+    expect(f.store.task(task.id).status).toBe("awaiting_user");
+    expect(f.calls).toHaveLength(2);
+    expect(reviewed.filter(id => id === "image-1")).toHaveLength(1);
+    expect(reviewed.filter(id => id === "image-2")).toHaveLength(2);
+  } finally { f.store.db.close(); }
+});
+
+
+test("图片锁绑定图片和生成提示词，换图后旧审核不能沿用", () => {
+  const asset = { imageId: "a", generationPrompt: "要求", imageReview: { imageId: "a", prompt: "要求", pass: true } };
+  expect(isAssetImageLocked(asset)).toBe(true);
+  expect(isAssetImageLocked({ ...asset, imageId: "b" })).toBe(false);
+  expect(isAssetImageLocked({ ...asset, generationPrompt: "新要求" })).toBe(false);
+  expect(isAssetImageLocked({ ...asset, imageId: undefined })).toBe(false);
+});
+
+test("旧审核失败图片先按新优先级复审，不因旧意见直接重画", async () => {
+  const f = setup("cel");
+  try {
+    await f.produce({ type: "assets", data: { summary: "玉牌", assets: [prop()], voices: [] } });
+    const old = f.checkpoint();
+    old.data.assets[0].imageReview = { imageId: old.data.assets[0].imageId, prompt: old.data.assets[0].generationPrompt, pass: false, feedback: "误把通用服装示例当成硬性要求" };
+    old.data.assets[0].imageRepairFeedback = "旧的误判意见";
+    const result = await f.produce(old);
+    expect(f.calls).toHaveLength(1);
+    expect((result.data as any).assets[0].imageId).toBe(old.data.assets[0].imageId);
+  } finally { f.store.db.close(); }
+});
+
+test("恢复修订号变化仍沿用已有定妆计划，不自动规划后集", async () => {
+  let plans = 0;
+  const f = setup("cel", () => { plans++; throw Error("不应重新规划"); });
+  try {
+    const task = f.store.tasks(f.project.id).find(t => t.stage === 3)!;
+    f.store.patchSettings(f.project.id, { lookRegistry: { type: "look-registry", entities: [
+      { id: "token", name: "信物", kind: "prop", variants: [{ id: "whole", name: "完整", kind: "form", identity: "玉牌", form: "完整", source: "故事" }] },
+      { id: "later", name: "后集资产", kind: "prop", variants: [{ id: "whole", name: "完整", kind: "form", identity: "玉牌", form: "完整", source: "后集" }] },
+    ] } });
+    const result = await f.pipeline.produce(task, "test", {} as Connection, [], "", { type: "assets", data: { summary: "当前批次", lookPlanRevision: task.revision - 1, assets: [prop()], voices: [] } }, new AbortController().signal, undefined, true);
+    expect(plans).toBe(0);
+    expect((result.data as any).assets).toHaveLength(1);
   } finally { f.store.db.close(); }
 });

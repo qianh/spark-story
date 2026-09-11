@@ -386,34 +386,66 @@
   line-height: 1.8;
   color: var(--muted);
 }
-.asset-prompt {
+.asset-notes {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   margin: 2px 0 0;
 }
-.asset-prompt summary {
-  cursor: pointer;
+.asset-note {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--muted);
   font-size: 11px;
-  list-style: none;
+  cursor: pointer;
 }
-.asset-prompt summary::before {
+.asset-note::before {
   content: "▸ ";
   font-size: 9px;
 }
-.asset-prompt[open] summary::before {
-  content: "▾ ";
-}
-.asset-prompt summary::-webkit-details-marker {
-  display: none;
-}
-.asset-prompt summary:hover {
+.asset-note:hover {
   color: var(--text);
 }
-.asset-prompt[open] summary {
-  color: var(--text-2);
-  margin-bottom: 6px;
+.asset-note-reject {
+  color: var(--bad-text);
 }
-.asset-prompt p {
-  margin: 0;
+.asset-note-reject:hover {
+  color: var(--bad);
+}
+.asset-text-overlay {
+  z-index: 40;
+}
+.asset-text-dialog {
+  width: min(720px, 100%);
+}
+.asset-text-dialog-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: calc(92vh - 120px);
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+.asset-text-dialog-body p {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+.asset-text-dialog-body strong {
+  display: block;
+  margin: 14px 0 6px;
+  font-size: 12px;
+  color: var(--text);
+}
+.asset-text-dialog-body strong:first-child {
+  margin-top: 0;
 }
 .bundle-card textarea {
   font-size: 11px;
