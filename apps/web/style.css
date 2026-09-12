@@ -1145,6 +1145,93 @@ small {
   color: var(--muted);
   padding: 13px 0 20px;
 }
+.director-orb {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+  pointer-events: none;
+}
+.director-orb > * {
+  pointer-events: auto;
+}
+.director-orb-ball {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border: 1px solid var(--line-2);
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: var(--shadow);
+  display: grid;
+  place-items: center;
+}
+.director-orb-ball:hover {
+  background: var(--accent-hover);
+}
+.director-orb-ball.waiting {
+  box-shadow: var(--shadow), 0 0 0 6px var(--focus);
+}
+.director-orb-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--accent);
+  border: 1px solid var(--line-2);
+  font-size: 10px;
+  line-height: 16px;
+}
+.director-orb-panel {
+  width: min(380px, calc(100vw - 44px));
+  max-height: min(72vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--chat);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+.director-orb-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.director-orb-heading h3 {
+  font-size: 13px;
+}
+.director-orb-heading small {
+  display: block;
+  color: var(--muted);
+  margin-top: 3px;
+  font-size: 10px;
+}
+.director-orb-heading .icon-button {
+  margin-left: auto;
+}
+.director-orb-messages {
+  padding: 14px 15px 6px;
+  overflow: auto;
+  flex: 1;
+}
+.director-orb-panel .chat-compose {
+  margin: 0 14px 14px;
+}
+.director-orb-panel .proposal {
+  margin-top: 0;
+  margin-bottom: 14px;
+}
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -1906,7 +1993,7 @@ html[data-theme="dark"] .episode-bar select {
   font-size: 11px;
 }
 .history-panel {
-  margin-top: 20px;
+  margin-top: 0;
 }
 .version-row {
   padding: 13px 16px;
@@ -1945,10 +2032,12 @@ html[data-theme="dark"] .episode-bar select {
 .proposal small {
   color: var(--ok-text);
 }
-.proposal p {
+.proposal p,
+.proposal .change-plan {
   font-size: 11px;
   margin: 9px 0 13px;
   white-space: pre-wrap;
+  font-family: inherit;
 }
 .event-list {
   margin-top: 16px;
@@ -2456,3 +2545,6 @@ html[data-theme="dark"] .episode-bar select {
     transition: none !important;
   }
 }
+
+.model-review-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.model-review-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }

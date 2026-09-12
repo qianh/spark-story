@@ -1,9 +1,12 @@
 import {
   assetLookAgentPrompt,
+  normalizedXianxiaDna,
   assetVisualPrompt,
   generationReviewPrompt,
   assertCharacterContent,
   characterContentTemplate,
+  propContentTemplate,
+  sceneContentTemplate,
   migrateLegacyContent,
   productionVisualPrompt,
   visualReviewPrompt,
@@ -175,6 +178,10 @@ export class MediaPipeline {
           task.revision,
           JSON.stringify(bundle, null, 2),
         );
+        if (!store.modelReviewEnabled(task.projectId)) {
+          this.runtime.submitToUser(task, artifact);
+          break;
+        }
         store.updateTask(task.id, task.revision, "reviewing");
         const reports: string[] = [];
         let passed = true;
@@ -230,6 +237,7 @@ export class MediaPipeline {
           const visualReports: string[] = new Array(visual.length);
           const worker = async () => {
             while (next < visual.length && !reviewSignal.aborted) {
+              if (!store.modelReviewEnabled(task.projectId)) return;
               const index = next++;
               const file = visual[index];
               this.assertCurrent(task, reviewSignal);
@@ -264,6 +272,7 @@ export class MediaPipeline {
                   ),
                 );
                 this.assertCurrent(task, reviewSignal);
+                if (!store.modelReviewEnabled(task.projectId)) return;
                 if (bundle.type === "assets") {
                   for (const item of (bundle.data as AssetPlan).assets.filter(a => a.imageId === file.id)) {
                     item.imageReview = { policyVersion: assetReviewPolicyVersion, imageId: file.id, prompt: item.generationPrompt || "", ...report };
@@ -280,6 +289,7 @@ export class MediaPipeline {
                 active.delete(file.id);
                 saveReview("visual", active.size ? `并发审核 ${active.size} 项：${[...active.values()].join("、")}` : "本批图片 / 视频检查已完成");
               } catch (error) {
+                if (!store.modelReviewEnabled(task.projectId) && !signal.aborted) return;
                 abort.abort();
                 throw error;
               }
@@ -293,6 +303,10 @@ export class MediaPipeline {
           this.assertCurrent(task, reviewSignal);
           reports.push(...visualReports);
         });
+        if (!store.modelReviewEnabled(task.projectId)) {
+          this.runtime.submitToUser(task, artifact);
+          break;
+        }
         saveReview("summary", "检查素材完整性、剧本一致性和角色绑定");
         const summary = bundle.type === "assets"
           ? { pass: passed, feedback: passed ? "全部定妆图片已逐张通过并锁定，等待用户确认。" : "保留已通过图片，仅自动重试未通过图片。" }
@@ -372,6 +386,7 @@ export class MediaPipeline {
   }
   async prepareCharacterContent(task: Task, asset: AssetPlan["assets"][number], assets: AssetPlan["assets"], stylePrompt: string, signal: AbortSignal) {
     if (asset.kind !== "character" || !(stylePrompt.startsWith("STYLE LOCK —") || isXianxiaLookLock(stylePrompt))) return;
+    stylePrompt = normalizedXianxiaDna(stylePrompt);
     asset.prompt = migrateLegacyContent(asset.prompt);
     if (asset.promptFormat === "character-content-v1") {
       assertCharacterContent(asset.prompt);
@@ -379,7 +394,7 @@ export class MediaPipeline {
     }
     const result = parseResult(await this.runtime.call(
       task, crypto.randomUUID(), this.runtime.store.binding("文本模型"),
-      `只将以下单个角色的已有设定转写为 CONTENT，不改变身份、外貌、服装、年龄，不使用其他角色的设定；未知信息不编造。删除旧描述中的构图背景和光影，内容不含 cinematic、史诗、仙气、电影感等风格词。填写全部字段，无则写 none。单独规划的武器在 Other accessories 写 no weapon。仅返回 JSON {"prompt":"填好的 CONTENT 全文"}。模板：\n${characterContentTemplate}\n固定画风（不输出、不修改）：\n${stylePrompt}\n该角色设定：${JSON.stringify({ name: asset.name, prompt: asset.prompt, identity: asset.identity, state: asset.state })}\n独立道具名称：${JSON.stringify(assets.filter(a => a.kind === "prop").map(a => a.name))}`,
+      `只将以下单个角色的已有设定转写为 CONTENT，不改变身份、外貌、年龄、关键服装配色与角色辨识特征，不使用其他角色的设定。服装结构、材质、纹样和配饰必须服从所选全局画风；仙侠画风中将旧描述的现代日常、科幻或西式服饰改写为对应身份的仙侠衣袍形制，保留可兼容的关键颜色与标志，不原样保留冲突服装。未知身份信息不编造。删除旧描述中的构图背景和光影，内容不含 cinematic、史诗、仙气、电影感等风格词。填写全部字段，无则写 none。单独规划的武器在 Other accessories 写 no weapon。仅返回 JSON {"prompt":"填好的 CONTENT 全文"}。模板：\n${characterContentTemplate}\n固定画风（不输出、不修改）：\n${stylePrompt}\n该角色设定：${JSON.stringify({ name: asset.name, prompt: asset.prompt, identity: asset.identity, state: asset.state })}\n独立道具名称：${JSON.stringify(assets.filter(a => a.kind === "prop").map(a => a.name))}`,
       signal,
     ));
     if (!result || typeof result !== "object" || !("prompt" in result) || typeof result.prompt !== "string") throw Error("角色 CONTENT 转写未返回有效文本");
@@ -405,14 +420,14 @@ export class MediaPipeline {
       add(source.imageId, `the source design for ${asset.sourceUsage || "view"}; preserve its geometry, identity and materials, show only the requested asset or view. Do not independently redesign it.`);
     }
     if (baseImageId) add(baseImageId, "the same asset identity in another state; retain its defining design.");
-    if (!isUniversalXianxia(style) && style.referenceImageId && !isSeriesMasterLook(asset))
+    if (style.referenceImageId)
       add(
         style.referenceImageId,
         xianxiaModules(style)
           ? masterReferenceNote(asset.kind)
           : "production style only: match the selected visual style, shape language and rendering finish; do not copy this subject, face, age, hair color, costume, pose or background into a different asset.",
       );
-    return { ids, notes: style.prompt.startsWith("UNIVERSAL XIANXIA STYLE") ? "" : notes.length ? `\n\nREFERENCE ROLES\n${notes.join("\n")}` : "" };
+    return { ids, notes: notes.length ? `\n\nREFERENCE ROLES\n${notes.join("\n")}` : "" };
   }
 
   assetGenerationPrompt(asset: AssetPlan["assets"][number] | undefined, imageId: string) {
@@ -430,9 +445,80 @@ export class MediaPipeline {
       `审核实际图片，第一张为候选，后续为生成参考。${generationReviewPrompt(this.assetGenerationPrompt(asset, imageId))}返回 JSON {"pass":boolean,"feedback":"逐项引用生成要求、具体画面证据和不确定项"}。`, signal, paths)));
   }
 
-  async retryAsset(task: Task, assetId: string, signal: AbortSignal) {
-    if (task.stage !== 3) throw Error("仅定妆资产支持单张重新生成");
+  // Prompt drafts and unselected candidates do not change the confirmed design.
+  // Update their metadata in place so approval and the selected image keep their identity.
+  saveAssetMetadata(task: Task, artifact: Artifact, data: AssetPlan, signal: AbortSignal) {
+    const { store } = this.runtime;
+    const content = JSON.stringify({ type: "assets", data }, null, 2);
+    store.db.transaction(() => {
+      this.assertCurrent(task, signal);
+      const latest = store.one<Artifact>(
+        "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY rowid DESC LIMIT 1", task.id, task.revision,
+      );
+      if (latest?.id !== artifact.id || latest.content !== artifact.content)
+        throw Error("定妆产物已变化，请重试");
+      const result = store.db.run("UPDATE artifacts SET content=? WHERE id=? AND content=?", [content, artifact.id, artifact.content]);
+      if (result.changes !== 1) throw Error("定妆产物已变化，请重试");
+    })();
+    artifact.content = content;
+  }
+  async regenerateAssetPrompt(task: Task, assetId: string, instruction: string, signal: AbortSignal) {
+    if (task.stage !== 3) throw Error("仅定妆资产支持单张重新生成提示词");
     if (["running", "reviewing", "coordinating"].includes(task.status))
+      throw Error("任务正在执行，请先中断再调整提示词");
+    const { store } = this.runtime;
+    const artifact = store.one<Artifact>(
+      "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY rowid DESC LIMIT 1", task.id, task.revision,
+    );
+    if (!artifact) throw Error("还没有可调整的定妆产物");
+    const data = assetPlanSchema.parse(mediaBundle(artifact.content)?.data);
+    const asset = data.assets.find(a => a.id === assetId);
+    if (!asset) throw Error("资产不存在");
+    const style = store.visualStyle(task.projectId);
+    const styleKey = visualStyleKey(style);
+    this.assertCurrent(task, signal);
+    const current = { ...asset, ...(asset.promptDraft ? { prompt: asset.promptDraft.prompt, promptFormat: asset.promptDraft.promptFormat } : {}) };
+    const modular = Boolean(xianxiaModules(style)) || style.prompt.startsWith("STYLE LOCK —");
+    const promptFormat = modular ? `${asset.kind}-content-v1` : "visual-description-v1";
+    const template = modular ? ({ character: characterContentTemplate, prop: propContentTemplate, scene: sceneContentTemplate }[asset.kind]) : "完整中文外观描述，约150～300字，只含该资产可复用的外貌、衣着和形制";
+    const result = parseResult(await this.runtime.call(
+      task, crypto.randomUUID(), store.binding("文本模型"),
+      `你是全剧定妆提示词编辑。作品全局画风（最高约束，不写入内容）：${productionVisualPrompt(style)}\n输出格式 promptFormat 必须是 ${promptFormat}。严格按下面模板填写全部字段，不适用写 none；场景不得出现人。模板：\n${template}\n本次仅重新生成下面这一个资产的提示词，不规划或修改其他资产。保留名称、身份、年龄阶段、面容与角色辨识特征。衣着可按用户要求调整，但服装轮廓、材质、纹样与配饰必须属于作品所选美术世界；全剧画风是最高约束，用户的局部调整不能覆盖它。仙侠作品使用仙侠服饰设计，禁止混入现代日常、科幻或西方服饰。删除已有内容中的冲突画风、渲染和镜头要求，画风由程序统一拼接。不要修改 identity、state 或其他元数据。单独列出的道具不出现在角色身上。只返回 JSON {"prompt":"新内容", "promptFormat":"对应格式"}。\n当前资产：${JSON.stringify({ id: current.id, name: current.name, kind: current.kind, prompt: current.prompt, promptFormat: current.promptFormat, identity: current.identity, state: current.state, growthStage: current.growthStage })}\n独立道具：${JSON.stringify(data.assets.filter(a => a.kind === "prop").map(a => a.name))}\n用户局部调整（只修改该资产内容，不改变全剧画风）：${JSON.stringify(instruction)}`,
+      signal,
+    ));
+    const draftSchema = assetPlanSchema.shape.assets.element.shape.promptDraft.unwrap();
+    const draft = draftSchema.parse({ ...(result && typeof result === "object" ? result : {}), instruction, styleKey, generationPrompt: "" });
+    if (draft.promptFormat !== promptFormat) throw Error("提示词格式与当前资产和画风不匹配");
+    const nextAsset = { ...asset, prompt: draft.prompt, promptFormat: draft.promptFormat };
+    const base = asset.baseLibraryId
+      ? store.assetLibrary(task.projectId).find(a => a.libraryId === asset.baseLibraryId)
+      : undefined;
+    const refs = this.assetReferences(task, nextAsset, data.assets,
+      base?.generationStyleKey === styleKey ? base.imageId : undefined);
+    draft.generationPrompt = assetVisualPrompt(style, nextAsset, data.assets) + refs.notes;
+    this.assertCurrent(task, signal);
+    if (visualStyleKey(store.visualStyle(task.projectId)) !== styleKey) throw Error("作品画风已变化，请重新生成提示词");
+    const latestArtifact = store.one<Artifact>(
+      "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY rowid DESC LIMIT 1", task.id, task.revision,
+    );
+    if (latestArtifact?.id !== artifact.id) throw Error("定妆产物已变化，请重新生成提示词");
+    asset.promptDraft = draft;
+    const next = { type: "assets" as const, data };
+    this.saveAssetMetadata(task, artifact, data, signal);
+    store.event(task.projectId, task.id, "asset.prompt.regenerated", `${asset.name} 的新提示词已保存，可单独生成候选图`);
+    return next;
+  }
+  async retryAsset(
+    task: Task,
+    assetId: string,
+    signal: AbortSignal,
+    fromDirector = false,
+  ) {
+    if (task.stage !== 3) throw Error("仅定妆资产支持单张重新生成");
+    if (
+      ["running", "reviewing"].includes(task.status) ||
+      (task.status === "coordinating" && !fromDirector)
+    )
       throw Error("任务正在执行，请先中断再重试单张定妆");
     const { store, media } = this.runtime;
     const artifact = store.one<Artifact>(
@@ -452,10 +538,15 @@ export class MediaPipeline {
       ? library.find((a) => a.libraryId === asset.baseLibraryId)
       : undefined;
     this.assertCurrent(task, signal);
-    if (asset.promptFormat !== "character-content-v1" &&
-        asset.promptFormat !== "prop-content-v1" &&
-        asset.promptFormat !== "scene-content-v1")
-      await this.prepareCharacterContent(task, asset, data.assets, style.prompt, signal);
+    if (asset.promptDraft && asset.promptDraft.styleKey !== visualStyleKey(style))
+      throw Error("提示词草稿属于旧画风，请重新生成提示词");
+    const generationAsset = asset.promptDraft
+      ? { ...asset, prompt: asset.promptDraft.prompt, promptFormat: asset.promptDraft.promptFormat }
+      : { ...asset };
+    if (generationAsset.promptFormat !== "character-content-v1" &&
+        generationAsset.promptFormat !== "prop-content-v1" &&
+        generationAsset.promptFormat !== "scene-content-v1")
+      await this.prepareCharacterContent(task, generationAsset, data.assets, style.prompt, signal);
     if (
       xianxiaModules(style) &&
       !isUniversalXianxia(style) &&
@@ -466,7 +557,7 @@ export class MediaPipeline {
     const refs = this.assetReferences(task, asset, data.assets,
       base?.generationStyleKey === visualStyleKey(style) ? base.imageId : undefined);
     const generationPrompt =
-      assetVisualPrompt(style, asset, data.assets) + refs.notes;
+      assetVisualPrompt(style, generationAsset, data.assets) + refs.notes;
     const candidateId = await media.ensure(
       task.id,
       task.revision,
@@ -478,6 +569,8 @@ export class MediaPipeline {
       undefined,
       true,
     );
+    this.assertCurrent(task, signal);
+    if (visualStyleKey(store.visualStyle(task.projectId)) !== visualStyleKey(style)) throw Error("作品画风已变化，请重新生成");
     asset.candidates = [
       ...new Set([
         ...(asset.candidates || []),
@@ -485,12 +578,29 @@ export class MediaPipeline {
         candidateId,
       ]),
     ];
+    if (asset.imageId) {
+      const previous = asset.candidateSpecs?.[asset.imageId];
+      asset.candidateSpecs = { ...asset.candidateSpecs, [asset.imageId]: {
+        prompt: asset.generationPrompt || "",
+        styleKey: asset.generationStyleKey || "",
+        styleVersion: asset.generationStyleVersion || "",
+        referenceIds: asset.generationReferenceIds || [],
+        ...previous,
+        contentPrompt: previous?.contentPrompt || asset.prompt,
+        contentFormat: previous?.contentFormat || asset.promptFormat,
+      } };
+    }
     asset.candidateSpecs = { ...asset.candidateSpecs, [candidateId]: {
       prompt: generationPrompt, styleKey: visualStyleKey(style),
       styleVersion: style.version || style.id, referenceIds: refs.ids,
+      contentPrompt: generationAsset.prompt, contentFormat: generationAsset.promptFormat,
     } };
     const next = { type: "assets" as const, data };
-    store.publish(task.id, task.revision, JSON.stringify(next, null, 2));
+    this.saveAssetMetadata(task, artifact, data, signal);
+    if (!store.modelReviewEnabled(task.projectId)) {
+      store.event(task.projectId, task.id, "review.skipped", `${asset.name} 候选已保存，由用户选用`);
+      return next;
+    }
     const report = await this.reviewAssetImage(
       task,
       asset,
@@ -498,8 +608,9 @@ export class MediaPipeline {
       refs.ids,
       signal,
     );
+    this.assertCurrent(task, signal);
     asset.candidateSpecs[candidateId].passed = report.pass;
-    store.publish(task.id, task.revision, JSON.stringify(next, null, 2));
+    this.saveAssetMetadata(task, artifact, data, signal);
     store.event(task.projectId, task.id, report.pass ? "review.asset.passed" : "review.asset.failed", `${asset.name}：${report.feedback}`);
     this.assertCurrent(task, signal);
     if (!report.pass)
@@ -533,7 +644,7 @@ export class MediaPipeline {
     ];
     if (!pool.includes(imageId)) throw Error("只能选择本次抽卡产生的候选图");
     const spec = asset.candidateSpecs?.[imageId];
-    if (spec?.passed === false) throw Error("这张候选图未通过画风或内容验收，请重新生成");
+    if (store.modelReviewEnabled(task.projectId) && spec?.passed === false) throw Error("这张候选图未通过画风或内容验收，请重新生成");
     if ((spec?.styleKey || asset.generationStyleKey) !== visualStyleKey(store.visualStyle(task.projectId)))
       throw Error("候选图属于旧画风，请按当前画风重新生成");
     this.runtime.media.files.get(imageId, task.projectId);
@@ -543,6 +654,11 @@ export class MediaPipeline {
     delete asset.libraryId;
     if (spec) {
       asset.generationPrompt = spec.prompt;
+      if (spec.contentPrompt) {
+        asset.prompt = spec.contentPrompt;
+        asset.promptFormat = spec.contentFormat;
+        if (asset.promptDraft?.prompt === spec.contentPrompt) delete asset.promptDraft;
+      }
       asset.generationStyleKey = spec.styleKey;
       asset.generationStyleVersion = spec.styleVersion;
       asset.generationReferenceIds = spec.referenceIds;
@@ -554,12 +670,13 @@ export class MediaPipeline {
     store.db.run("UPDATE artifacts SET status='superseded' WHERE taskId=? AND revision=? AND status IN ('approved','reviewed')", [task.id, task.revision]);
     store.invalidateAfter(task);
     store.updateTask(task.id, task.revision, "paused");
-    store.publish(task.id, task.revision, JSON.stringify(next, null, 2));
+    const selectedArtifact = store.publish(task.id, task.revision, JSON.stringify(next, null, 2));
+    if (!store.modelReviewEnabled(task.projectId)) this.runtime.submitToUser(task, selectedArtifact);
     store.event(
       task.projectId,
       task.id,
       "media.select",
-      `${asset.name} 已选中候选，重新审核确认后作为全剧定妆；相关关键帧和视频已标为待更新。`,
+      `${asset.name} 已选中候选，${store.modelReviewEnabled(task.projectId) ? "重新审核确认" : "由用户确认"}后作为全剧定妆；相关关键帧和视频已标为待更新。`,
     );
     return next;
   }
@@ -589,9 +706,13 @@ export class MediaPipeline {
     character: string | undefined,
     signal: AbortSignal,
     rewritePortrait = false,
+    fromDirector = false,
   ) {
     if (task.stage !== 3) throw Error("仅定妆与资产阶段支持角色声音试听");
-    if (["running", "reviewing", "coordinating"].includes(task.status))
+    if (
+      ["running", "reviewing"].includes(task.status) ||
+      (task.status === "coordinating" && !fromDirector)
+    )
       throw Error("任务正在执行，请先中断再重新生成试听");
     const { store, media } = this.runtime;
     if (store.downstream(task).some((t) => this.runtime.active.has(t.id)))
@@ -985,6 +1106,7 @@ export class MediaPipeline {
       );
       let contentTurn = Promise.resolve();
       await runLookImagePool(ordered, signal, async (asset, workSignal) => {
+        if (asset.imageId && !store.modelReviewEnabled(task.projectId) && asset.generationStyleKey === visualStyleKey(style)) return;
         if (isAssetImageLocked(asset) && asset.generationStyleKey === visualStyleKey(style)) return;
         if (asset.imageId && asset.imageReview?.pass === false &&
             asset.imageReview.imageId === asset.imageId &&
@@ -1360,7 +1482,7 @@ export class MediaPipeline {
             );
             saveProgress("production", data);
           }
-          if (!shot.videoId) {
+          if (!shot.videoId && store.modelReviewEnabled(task.projectId)) {
             const review = reviewSchema.parse(
               parseResult(
                 await this.runtime.call(

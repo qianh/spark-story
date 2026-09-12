@@ -56,6 +56,7 @@ test("一次列全问题、局部返工；断线恢复保留约束与问题，�
     template: "cel",
     budget: 0,
   });
+  store.patchSettings(p.id, { modelReviewEnabled: true });
   const task = store.tasks(p.id).find((t) => t.stage === 8)!;
   const prompts: string[] = [];
   let reviews = 0,

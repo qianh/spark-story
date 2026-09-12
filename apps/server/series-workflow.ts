@@ -45,7 +45,7 @@ export async function executeSeries(
       task.revision,
       kind,
       content,
-      status,
+      status === "reviewed" && !store.modelReviewEnabled(task.projectId) ? "unreviewed" : status,
       new Date().toISOString(),
     ]);
   };
@@ -62,7 +62,7 @@ export async function executeSeries(
       task.revision,
       kind,
     );
-    if (cp?.status === "reviewed") return schema.parse(JSON.parse(cp.content));
+    if (cp?.status === "reviewed" || (cp?.status === "unreviewed" && !store.modelReviewEnabled(task.projectId))) return schema.parse(JSON.parse(cp.content));
     let feedback =
       cp?.status === "rejected" ? "上次片段未通过，请修复该片段。" : "";
     let previous = cp?.content || "";
@@ -114,7 +114,7 @@ export async function executeSeries(
       store.updateTask(task.id, task.revision, "reviewing");
       const report = reviewSchema.parse(
         parseResult(
-          await runtime.call(
+          await runtime.reviewCall(
             task,
             attempt,
             master,
@@ -282,7 +282,7 @@ export async function executeSeries(
         continue;
       const report = reviewSchema.parse(
         parseResult(
-          await runtime.call(
+          await runtime.reviewCall(
             task,
             attempt,
             master,
@@ -328,9 +328,14 @@ export async function executeSeries(
         })),
       })
     : content;
+  if (!store.modelReviewEnabled(task.projectId)) {
+    runtime.submitToUser(task, artifact);
+    store.db.run("UPDATE attempts SET status='completed' WHERE id=?", [attempt]);
+    return;
+  }
   const final = reviewSchema.parse(
     parseResult(
-      await runtime.call(
+      await runtime.reviewCall(
         task,
         attempt,
         master,

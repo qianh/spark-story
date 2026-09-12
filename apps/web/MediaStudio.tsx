@@ -254,7 +254,11 @@ export function MediaPreview({
           type="button"
           className="media-enlarge"
           aria-label={"放大预览 " + f.name}
-          onClick={() => setOpen(true)}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setOpen(true);
+          }}
         >
           <img src={mediaUrl(f.id)} alt={f.name} loading="lazy" />
           <span className="media-enlarge-hint" aria-hidden="true">
@@ -745,19 +749,23 @@ export function MediaJobs({
   );
 }
 export function BundleView({
+  modelReviewEnabled = false,
   content,
   files,
   onSave,
   onRetryAsset,
+  onRegenerateAssetPrompt,
   onSelectAsset,
   onRetryVoices,
   busy,
   production,
 }: {
+  modelReviewEnabled?: boolean;
   content: string;
   files: MediaFile[];
   onSave: (content: string) => void;
-  onRetryAsset?: (assetId: string) => void;
+  onRetryAsset?: (assetId: string) => void | Promise<unknown>;
+  onRegenerateAssetPrompt?: (assetId: string, instruction: string) => Promise<unknown>;
   onSelectAsset?: (assetId: string, imageId: string) => void;
   onRetryVoices?: (character?: string, rewritePortrait?: boolean) => void;
   busy: boolean;
@@ -767,8 +775,25 @@ export function BundleView({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<any>(null);
   const [note, setNote] = useState<
-    { kind: "review" | "prompt"; assetId: string } | null
+    { kind: "review" | "prompt" | "rewrite"; assetId: string } | null
   >(null);
+  const [promptInstruction, setPromptInstruction] = useState("");
+  const [promptPending, setPromptPending] = useState(false);
+  const [promptError, setPromptError] = useState("");
+  const [retryError, setRetryError] = useState<{ assetId: string; message: string } | null>(null);
+  const closeNote = useCallback(() => setNote(null), []);
+  const retryImage = async (assetId: string) => {
+    if (!onRetryAsset) return false;
+    setRetryError(null);
+    setPromptError("");
+    try { await onRetryAsset(assetId); return true; }
+    catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setRetryError({ assetId, message });
+      setPromptError(message);
+      return false;
+    }
+  };
   if (!original)
     return <MarkdownContent content={content} rules={production} />;
   const bundle = editing ? draft : original,
@@ -820,7 +845,7 @@ export function BundleView({
       {bundle.type === "assets" ? (
         <>
           <p className="muted">全剧共享定妆：先出当前集用到的角色、场景与道具；后集新变体再补。所有集引用同一份已确认版本。</p>
-          <p className="muted">已通过并锁定 {data.assets.filter(isAssetImageLocked).length} / {data.assets.length} 张；自动执行只处理未通过图片。已锁定图片可通过单张重新生成替换。</p>
+          <p className="muted">{modelReviewEnabled ? `已通过并锁定 ${data.assets.filter(isAssetImageLocked).length} / ${data.assets.length} 张；自动执行只处理未通过图片。` : "模型审核已关闭。请查看图片并自行决定，可单张重新生成或选择已有候选。"}</p>
           <div className="bundle-asset-grid">
             {lookSheetAssets(data.assets).map((asset: any) => {
               const i = data.assets.findIndex((row: any) => row.id === asset.id);
@@ -838,7 +863,7 @@ export function BundleView({
                   </span>
                 </h3>
                 {isAssetImageLocked(asset) && <span className="tag">已通过 · 已锁定</span>}
-                {assetReviewFailed(asset) && <span className="tag">待自动重试</span>}
+                {modelReviewEnabled && assetReviewFailed(asset) && <span className="tag">待自动重试</span>}
                 <div className="asset-notes">
                   {assetReviewFailed(asset) && (
                     <button
@@ -848,7 +873,7 @@ export function BundleView({
                         setNote({ kind: "review", assetId: asset.id })
                       }
                     >
-                      不通过原因
+                      {modelReviewEnabled ? "不通过原因" : "历史审核意见"}
                     </button>
                   )}
                   {editing ? (
@@ -887,16 +912,20 @@ export function BundleView({
                     </button>
                   )}
                 </div>
+                {asset.promptDraft && !editing && (
+                  <span className="tag">有新提示词</span>
+                )}
                 {onRetryAsset && (
                   <button
                     className="text-button asset-retry"
                     disabled={busy}
-                    onClick={() => onRetryAsset(asset.id)}
+                    onClick={() => { void retryImage(asset.id); }}
                   >
                     <RefreshCw size={13} />
                     {asset.imageId ? "再抽一张" : "生成此图"}
                   </button>
                 )}
+                {retryError?.assetId === asset.id && <p className="job-error" role="alert">{retryError?.message}</p>}
                 {onSelectAsset &&
                   (asset.candidates || []).filter((id: string) => id !== asset.imageId).length >
                     0 && (
@@ -905,15 +934,17 @@ export function BundleView({
                       {(asset.candidates as string[])
                         .filter((id) => id !== asset.imageId)
                         .map((id) => (
-                          <button
-                            key={id}
-                            className="button secondary compact"
-                            disabled={busy}
-                            onClick={() => onSelectAsset(asset.id, id)}
-                          >
-                            选为正式定妆
+                          <div key={id} className="asset-candidate">
+                            <button
+                              type="button"
+                              className="button secondary compact"
+                              disabled={busy}
+                              onClick={() => onSelectAsset(asset.id, id)}
+                            >
+                              选为正式定妆
+                            </button>
                             <MediaPreview id={id} files={files} />
-                          </button>
+                          </div>
                         ))}
                     </div>
                   )}
@@ -1472,13 +1503,49 @@ export function BundleView({
       )}
       {noteAsset && note && (
         <AssetTextDialog
-          title={note.kind === "review" ? "不通过原因" : "提示词"}
-          onClose={() => setNote(null)}
+          title={note.kind === "review" ? "审核意见" : note.kind === "rewrite" ? `${noteAsset.name} · 重新生成提示词` : "提示词"}
+          onClose={closeNote}
         >
           {note.kind === "review" ? (
             <p>{noteAsset.imageReview?.feedback}</p>
+          ) : note.kind === "rewrite" ? (
+            <div className="asset-prompt-editor">
+              <p className="muted">沿用作品所选画风，统一造型语言、材质和布光。这里只调整这张图的内容与衣着。</p>
+              <label htmlFor="asset-prompt-instruction">这张图想怎么调整</label>
+              <textarea id="asset-prompt-instruction" rows={4} maxLength={4000}
+                value={promptInstruction} disabled={busy || promptPending}
+                onChange={(e) => setPromptInstruction(e.target.value)}
+                placeholder="例如：保留青年面貌，衣服改为素色仙侠药师袍；保持全剧的 3D 仙侠画风。留空则优化现有描述。" />
+              <button type="button" className="button primary" disabled={busy || promptPending}
+                onClick={async () => {
+                  if (!onRegenerateAssetPrompt) return;
+                  setPromptPending(true);
+                  setPromptError("");
+                  try { await onRegenerateAssetPrompt(noteAsset.id, promptInstruction); }
+                  catch (e) { setPromptError(e instanceof Error ? e.message : String(e)); }
+                  finally { setPromptPending(false); }
+                }}>
+                <RefreshCw size={14} /> {promptPending ? "正在生成提示词…" : "重新生成提示词"}
+              </button>
+              {promptError && <p className="job-error" role="alert">{promptError}</p>}
+              {noteAsset.promptDraft ? (
+                <>
+                  <strong>下次生图使用的新提示词</strong>
+                  <p className="asset-prompt-draft">{noteAsset.promptDraft.generationPrompt || noteAsset.promptDraft.prompt}</p>
+                  <p className="muted">提示词已保存。生成新图片后，可从候选中选择满意的一张。</p>
+                  {onRetryAsset && <button type="button" className="button primary"
+                    disabled={busy || promptPending} onClick={async () => { if (await retryImage(noteAsset.id)) closeNote(); }}>
+                    使用新提示词生图
+                  </button>}
+                </>
+              ) : <p className="muted">生成提示词后可先查看，再决定是否生图。</p>}
+              <details><summary>当前图片的提示词</summary>{assetPromptContent(noteAsset)}</details>
+            </div>
           ) : (
-            assetPromptContent(noteAsset)
+            <>
+              {noteAsset.promptDraft && <><strong>下次生图使用的新提示词</strong><p>{noteAsset.promptDraft.generationPrompt || noteAsset.promptDraft.prompt}</p></>}
+              {assetPromptContent(noteAsset)}
+            </>
           )}
         </AssetTextDialog>
       )}

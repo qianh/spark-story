@@ -32,13 +32,11 @@ import {
   Layers,
   LayoutDashboard,
   LoaderCircle,
-  MessageSquare,
   MoreHorizontal,
   Pause,
   Play,
   Plus,
   RefreshCw,
-  Send,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -48,6 +46,7 @@ import {
 } from "lucide-react";
 import { ThemeSwitch } from "./theme";
 import { StyleForm } from "./StyleForm";
+import { DirectorOrb } from "./DirectorOrb";
 import {
   roles,
   stages,
@@ -94,6 +93,7 @@ import {
 } from "../../packages/production";
 
 type Board = {
+  modelReviewEnabled?: boolean;
   project: Project;
   production?: ProductionRules;
   productionNeedsReplan?: boolean;
@@ -186,7 +186,6 @@ function App() {
   const [selectedEpisode, setSelectedEpisode] = useState(1);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [chat, setChat] = useState("");
   const [chapterInstruction, setChapterInstruction] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [offline, setOffline] = useState(false);
@@ -236,7 +235,7 @@ function App() {
       clearInterval(timer);
     };
   }, [projectId]);
-  async function act(fn: () => Promise<unknown>) {
+  async function act(fn: () => Promise<unknown>, rethrow = false) {
     setBusy(true);
     setError("");
     try {
@@ -244,6 +243,7 @@ function App() {
       await reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      if (rethrow) throw e;
     } finally {
       setBusy(false);
     }
@@ -284,7 +284,7 @@ function App() {
       )
     : [];
   const checkpointStatus = (status: string) =>
-    ({ reviewed: "已通过", rejected: "未通过", candidate: "待审核" })[status] ||
+    ({ reviewed: "已通过", rejected: "未通过", candidate: "待审核", unreviewed: "待你确认" })[status] ||
     "待处理";
   const liveProduct =
     structured(liveContent, storySchema) ||
@@ -332,18 +332,6 @@ function App() {
             : page === "agents"
               ? "专业 Agent"
               : board?.project.name || "创作工作台";
-  async function sendChat(e: React.FormEvent) {
-    e.preventDefault();
-    if (!chat.trim() || !activeTask) return;
-    const message = chat;
-    await act(async () => {
-      await api(`/tasks/${activeTask.id}/interrupt`, {
-        revision: activeTask.revision,
-        message,
-      });
-      setChat("");
-    });
-  }
   function download(a: Artifact) {
     const link = document.createElement("a");
     link.href = URL.createObjectURL(
@@ -457,6 +445,13 @@ function App() {
             )}
           </div>
           <div className="top-actions">
+            {board && <label className="model-review-toggle" title="关闭后，生成结果直接交由你确认；开启后，先由模型审核。">
+              <input type="checkbox" role="switch" aria-label="模型审核"
+                checked={board.modelReviewEnabled === true}
+                onChange={(e) => { const enabled = e.target.checked; void act(() => api(`/projects/${board.project.id}/model-review`, { enabled }, "PUT")); }} />
+              模型审核：{board.modelReviewEnabled ? "开启" : "关闭"}
+            </label>}
+
             <span className="version-label">LOCAL / v0.3</span>
             <ThemeSwitch />
             <button
@@ -482,12 +477,7 @@ function App() {
             <LoaderCircle className="spin" /> 正在打开制作室
           </div>
         ) : (
-          <div
-            className={
-              "content-layout " +
-              (page === "board" && board && !workspace ? "with-chat" : "")
-            }
-          >
+          <div className="content-layout">
             <main>
               {workspace && task && board ? (
                 <>
@@ -549,7 +539,7 @@ function App() {
                           )
                         }
                       >
-                        <Pause size={15} /> 立即中断
+                        <Pause size={15} /> 暂停
                       </button>
                       {(![
                         "running",
@@ -782,6 +772,7 @@ function App() {
                         </>
                       ) : artifact ? (
                         <BundleView
+                          modelReviewEnabled={board.modelReviewEnabled}
                           production={board.production}
                           content={artifact.content}
                           files={board.mediaFiles || []}
@@ -810,12 +801,19 @@ function App() {
                               }),
                             )
                           }
+                          onRegenerateAssetPrompt={async (assetId, instruction) => {
+                            await api(`/tasks/${task.id}/regenerate-asset-prompt`, {
+                              revision: task.revision, assetId, instruction,
+                            });
+                            await reload();
+                          }}
                           onRetryAsset={(assetId) =>
                             act(() =>
                               api(`/tasks/${task.id}/retry-asset`, {
                                 revision: task.revision,
                                 assetId,
                               }),
+                              true,
                             )
                           }
                           onSelectAsset={(assetId, imageId) =>
@@ -853,11 +851,11 @@ function App() {
                         />
                       )}
                       {task.status === "awaiting_user" &&
-                        artifact?.status === "reviewed" && (
+                        (artifact?.status === "reviewed" || (artifact?.status === "unreviewed" && !board.modelReviewEnabled)) && (
                           <div className="approval-bar">
                             <span>
                               <ShieldCheck size={17} />{" "}
-                              主控审核已通过，等待你的确认
+                              {artifact?.status === "unreviewed" ? "模型审核已关闭，请直接确认此版本" : "主控审核已通过，等待你的确认"}
                             </span>
                             <button
                               className="button primary"
@@ -877,53 +875,6 @@ function App() {
                         )}
                     </section>
                     <div>
-                      <section className="panel">
-                        <div className="panel-heading">
-                          <span>
-                            <MessageSquare size={16} /> 实时干预
-                          </span>
-                        </div>
-                        <div className="padded">
-                          <p className="muted">
-                            明确的要求直接执行；不满意但没有具体方向时，主控会先提出方案。
-                          </p>
-                          <InterventionInput
-                            disabled={busy}
-                            onSubmit={(message) =>
-                              act(() =>
-                                api(`/tasks/${task.id}/interrupt`, {
-                                  revision: task.revision,
-                                  message,
-                                }),
-                              )
-                            }
-                          />
-                          {board.interventions
-                            .filter(
-                              (i) =>
-                                i.taskId === task.id &&
-                                i.status === "awaiting_confirmation" &&
-                                i.revision === task.revision,
-                            )
-                            .map((i) => (
-                              <div className="proposal" key={i.id}>
-                                <small>主控修改建议</small>
-                                <p>{i.proposal}</p>
-                                <button
-                                  className="button primary"
-                                  disabled={busy}
-                                  onClick={() =>
-                                    act(() =>
-                                      api(`/interventions/${i.id}/confirm`, {}),
-                                    )
-                                  }
-                                >
-                                  确认并继续
-                                </button>
-                              </div>
-                            ))}
-                        </div>
-                      </section>
                       <section className="panel history-panel">
                         <div className="panel-heading">
                           <span>
@@ -947,6 +898,7 @@ function App() {
                                   {{
                                     approved: "正式版",
                                     reviewed: "主控通过",
+                                    unreviewed: "待你确认",
                                     candidate: "候选",
                                     rejected: "待改进",
                                     superseded: "旧版本",
@@ -1609,7 +1561,7 @@ function App() {
                       {stages[stage]}
                       <span>1 个任务</span>
                     </h2>
-                    <span className="muted">主控审核 → 你的确认</span>
+                    <span className="muted">{board.modelReviewEnabled ? "主控审核 → 你的确认" : "生成完成 → 你的确认"}</span>
                   </div>
                   {visibleTasks
                     .filter((t) => t.stage === stage)
@@ -1709,76 +1661,34 @@ function App() {
                 </>
               )}
             </main>
-            {page === "board" && board && !workspace && (
-              <aside className="chat-panel">
-                <div className="chat-heading">
-                  <span className="master-mark">
-                    <Sparkles size={18} />
-                  </span>
-                  <div>
-                    <h3>主控 Agent</h3>
-                    <small>
-                      <i /> 创作协调中心
-                    </small>
-                  </div>
-                  <span className="tag">主控</span>
-                </div>
-                <div className="chat-messages">
-                  <div className="chat-date">项目工作记录</div>
-                  <div className="chat-bubble">
-                    <p>我是这部作品的主控。</p>
-                    <p>
-                      我会先检查专业 Agent
-                      的产出，再把关键节点交给你确认。你也可以随时进入工作区调整方向。
-                    </p>
-                    <div className="chat-context">
-                      <BookOpen size={15} />
-                      <span>当前：{activeTask?.title || "已完成"}</span>
-                    </div>
-                  </div>
-                  {board.events
-                    .filter((e) =>
-                      [
-                        "master.message",
-                        "review.passed",
-                        "review.failed",
-                        "task.error",
-                      ].includes(e.type),
-                    )
-                    .slice(0, 5)
-                    .reverse()
-                    .map((e) => (
-                      <div className="chat-bubble" key={e.seq}>
-                        <small>
-                          {e.type === "task.error" ? "执行提醒" : "主控"}
-                        </small>
-                        <p>{e.message}</p>
-                      </div>
-                    ))}
-                </div>
-                <form className="chat-compose" onSubmit={sendChat}>
-                  <textarea
-                    aria-label="给主控的修改意见"
-                    value={chat}
-                    onChange={(e) => setChat(e.target.value)}
-                    placeholder="告诉主控，你想调整什么…"
-                  />
-                  <div>
-                    <span>发送将中断当前任务并协调修改</span>
-                    <button
-                      aria-label="发送给主控"
-                      disabled={busy || !chat.trim() || !activeTask}
-                    >
-                      <Send size={15} />
-                    </button>
-                  </div>
-                </form>
-                <div className="chat-footnote">
-                  <ShieldCheck size={12} /> 关键决定，始终由你确认
-                </div>
-              </aside>
-            )}
           </div>
+        )}
+        {board && (
+          <DirectorOrb
+            board={board}
+            task={
+              visibleTasks.find((t) => t.status === "coordinating") ||
+              task ||
+              activeTask
+            }
+            busy={busy}
+            onSend={(message) =>
+              act(async () => {
+                const target =
+                  visibleTasks.find((t) => t.status === "coordinating") ||
+                  task ||
+                  activeTask;
+                if (!target) throw Error("请先进入一个阶段");
+                await api(`/tasks/${target.id}/interrupt`, {
+                  revision: target.revision,
+                  message,
+                });
+              })
+            }
+            onConfirm={(id) =>
+              act(() => api(`/interventions/${id}/confirm`, {}))
+            }
+          />
         )}
       </div>
       {modal && (
@@ -1983,36 +1893,6 @@ function EventList({ events }: { events: Event[] }) {
         />
       )}
     </section>
-  );
-}
-function InterventionInput({
-  disabled,
-  onSubmit,
-}: {
-  disabled: boolean;
-  onSubmit: (s: string) => void;
-}) {
-  const [value, setValue] = useState("");
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (value.trim()) onSubmit(value);
-      }}
-    >
-      <textarea
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder="例如：保留主线，让开场冲突更直接。"
-        aria-label="修改要求"
-      />
-      <button
-        className="button primary full"
-        disabled={disabled || !value.trim()}
-      >
-        <Pause size={14} /> 中断并交给主控
-      </button>
-    </form>
   );
 }
 function StyleArt({ index, color }: { index: number; color: string }) {

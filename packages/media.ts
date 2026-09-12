@@ -90,6 +90,13 @@ export const assetPlanSchema = z.object({
             "scene-content-v1",
           ])
           .optional(),
+        promptDraft: z.object({
+          prompt: z.string().trim().min(1).max(20000),
+          promptFormat: z.enum(["visual-description-v1", "character-content-v1", "prop-content-v1", "scene-content-v1"]),
+          generationPrompt: z.string(),
+          instruction: z.string().default(""),
+          styleKey: z.string(),
+        }).optional(),
         identity: z.string().default(""),
         state: z.string().default(""),
         imageId: ref.optional(),
@@ -121,6 +128,8 @@ export const assetPlanSchema = z.object({
           styleVersion: z.string(),
           referenceIds: z.array(z.string()),
           passed: z.boolean().optional(),
+          contentPrompt: z.string().optional(),
+          contentFormat: z.enum(["visual-description-v1", "character-content-v1", "prop-content-v1", "scene-content-v1"]).optional(),
         })).optional(),
       }),
     )

@@ -3,6 +3,7 @@ import { templates } from "../packages/domain";
 import {
   assetLookAgentPrompt,
   assetVisualPrompt,
+  compileXianxiaLook,
   generationReviewPrompt,
   assertSceneContent,
   characterContentTemplate,
@@ -16,8 +17,10 @@ import {
   sceneContentTemplate,
   sceneSheetModule,
   sharedStyleDna,
+  xianxiaWorldDna,
   productionVisualPrompt,
   visualReviewPrompt,
+  selectedVisualStyleRule,
 } from "../packages/visual-style";
 
 test("所有画风的资产内容与验收均遵循选择，不向水墨或Q版注入仙侠三维规则", () => {
@@ -37,13 +40,17 @@ test("通用仙侠画风与三种资产类型使用新原文", () => {
   const t = templates.find((x) => x.id === "donghua3d")!;
   expect(t.prompt).toBe(sharedStyleDna);
   expect(donghuaStylePrompt.startsWith("UNIVERSAL XIANXIA STYLE\n")).toBe(true);
-  expect(donghuaStyleVersion).toBe("xianxia-universal-v2");
-  expect(sharedStyleDna).toContain("fabric lifted as if by mountain wind even when the figure stands still.");
-  expect(sharedStyleDna).toContain("Air: faint luminous mist, never a dead brown studio void.");
-  expect(sharedStyleDna).not.toMatch(/doll-smooth|taupe-gray|SAME SERIES STAGE|XIANXIA DONGHUA LOOK/);
-  expect(characterSheetModule).toBe("ASSET: character sheet. Full-body standing, three-quarter, feet visible, pale mist studio. One person.");
-  expect(propSheetModule).toBe("ASSET: hero prop. One object, three-quarter, pale mist studio or single dark wood slab.");
-  expect(sceneSheetModule).toBe("ASSET: donghua set plate. Monumental xianxia architecture, flying eaves, dougong, ceremonial stairs, designed mist, empty set.");
+  expect(donghuaStyleVersion).toBe("xianxia-universal-v3");
+  expect(sharedStyleDna).toContain("luxury immortal-drama character sheet");
+  expect(sharedStyleDna).toContain("Garment colors, sleeve widths, layers, embroidery and accessories come only from the character content");
+  expect(sharedStyleDna).toContain("Not plastic toy 3D, not Pixar");
+  expect(sharedStyleDna).toContain("Never turn a robe into a modern coat");
+  expect(sharedStyleDna).not.toContain("sheer gauze over dark teal-black robes");
+  expect(sharedStyleDna).toContain("pale taupe-gray luminous mist");
+  expect(sharedStyleDna).not.toMatch(/doll-smooth|SAME SERIES STAGE|XIANXIA DONGHUA LOOK/);
+  expect(characterSheetModule).toContain("high-finish 3D CGI character sheet");
+  expect(propSheetModule).toContain("high-finish 3D CGI hero prop");
+  expect(sceneSheetModule).toContain("high-finish 3D CGI xianxia set plate");
 });
 
 const filledContent = characterContentTemplate.replace(/\[[^\]]+\]/g, "none");
@@ -62,11 +69,11 @@ test("作品保存的画风与模块原样用于生图和审核，不以内部 D
     expect(result).not.toContain(sharedStyleDna);
     expect(result).toContain(kind === "character" ? style.characterModule : kind === "prop" ? style.propModule : style.sceneModule);
   }
-  expect(productionVisualPrompt(style)).toBe(style.prompt);
-  expect(productionVisualPrompt({ id: "donghua3d", prompt: "STYLE LOCK — 用户原文" })).toBe("STYLE LOCK — 用户原文");
+  expect(productionVisualPrompt(style)).toBe(`${style.prompt}\n\n${selectedVisualStyleRule(style)}`);
+  expect(productionVisualPrompt({ id: "donghua3d", prompt: "STYLE LOCK — 用户原文" })).toContain("STYLE LOCK — 用户原文");
 });
 
-test("角色定妆按 DNA + 人物模块 + CONTENT 拼接，不改 DNA", () => {
+test("角色定妆按 DNA + 人物模块 + 按画风编译的内容，不改 DNA", () => {
   const content = filledContent.replace(
     "Subject: none",
     "Subject: young Chinese male disciple Shen Buyan",
@@ -82,9 +89,11 @@ test("角色定妆按 DNA + 人物模块 + CONTENT 拼接，不改 DNA", () => {
       state: "不得重复的状态元数据",
     },
   );
-  expect(prompt).toBe(
-    `${sharedStyleDna}\n\n${characterSheetModule}\n\n${characterIdentityRule}\n${content}`,
-  );
+  expect(prompt.startsWith(`${sharedStyleDna}\n\n${characterSheetModule}\n\n${characterIdentityRule}\n`)).toBe(true);
+  expect(prompt.endsWith(selectedVisualStyleRule({ id: "donghua3d", prompt: donghuaStylePrompt }))).toBe(true);
+  expect(prompt).toContain("STYLE-NATIVE DESCRIPTION");
+  expect(prompt).toContain("young Chinese male disciple Shen Buyan");
+  expect(prompt).toContain(compileXianxiaLook("character", content));
   expect(prompt).not.toContain("不得重复的身份元数据");
   expect(() =>
     assetVisualPrompt(
@@ -105,10 +114,13 @@ test("场景和道具用同一 DNA，不用人物浅景模块", () => {
       state: "",
     },
   );
-  expect(scene.startsWith(sharedStyleDna)).toBe(true);
+  expect(scene.startsWith(xianxiaWorldDna)).toBe(true);
+  expect(scene).not.toContain("individually stranded hair");
+  expect(scene).not.toContain("Costume language:");
   expect(scene).not.toContain("SAME SERIES STAGE");
   expect(scene).toContain(sceneSheetModule);
-  expect(scene).toContain(filledScene);
+  expect(scene).toContain("STYLE-NATIVE DESCRIPTION");
+  expect(scene).toContain(compileXianxiaLook("scene", filledScene));
   expect(scene).not.toContain("CHARACTER SHEET");
   expect(scene).not.toContain("taupe-gray studio backdrop");
   const prop = assetVisualPrompt(
@@ -123,8 +135,9 @@ test("场景和道具用同一 DNA，不用人物浅景模块", () => {
   );
   expect(prop).toContain(propSheetModule);
   expect(prop).not.toContain("CHARACTER SHEET");
-  expect(prop).toContain("CONTENT — PROP");
-  expect(scene).toContain("CONTENT — SCENE");
+  expect(prop).toContain("STYLE-NATIVE DESCRIPTION");
+  expect(prop).toContain(compileXianxiaLook("prop", filledProp));
+  expect(scene).toContain("immortal-sect");
   expect(() =>
     assertSceneContent(
       filledScene.replace(
@@ -276,9 +289,8 @@ test("窥伺影只改人设，仍走同一套锁和片场", () => {
       state: "基础定妆",
     },
   );
-  expect(prompt).toBe(
-    `${sharedStyleDna}\n\n${characterSheetModule}\n\n${characterIdentityRule}\n${content}`,
-  );
+  expect(prompt.startsWith(`${sharedStyleDna}\n\n${characterSheetModule}\n\n${characterIdentityRule}\n`)).toBe(true);
+  expect(prompt).toContain(compileXianxiaLook("character", content));
   expect(prompt).toContain("grey-gold");
   expect(prompt).toContain("empty eye sockets");
   expect(prompt).toContain("scorched-gold bone-lacquer");
@@ -319,7 +331,7 @@ Camera: wide establishing`;
     const output = assetVisualPrompt({ id: "donghua3d", prompt: sharedStyleDna }, {
       kind, prompt, promptFormat: `${kind}-content-v1`, identity: "", state: "",
     });
-    expect(output).toContain(`CONTENT — ${kind.toUpperCase()}`);
+    expect(output).toContain("STYLE-NATIVE DESCRIPTION");
     if (kind === "scene") {
       expect(output).toContain("courtyard in front, hall behind");
       expect(output).toContain("carved columns");
@@ -348,4 +360,108 @@ test("灵鸟角色的单主体声明保留物种，不强制写成人", () => {
     kind: "character", promptFormat: "character-content-v1", prompt: content, identity: "灵鸟", state: "常态",
   });
   expect(result).toContain("Only this one bird in frame.");
+});
+
+
+test("历史通用仙侠提示词去除统一服装默认值，保留作品附加设计与模块", () => {
+  const legacy = `UNIVERSAL XIANXIA STYLE
+Chinese 3D xianxia donghua from one same series.
+Immortal xianxia look: tall slender proportions; layered xianxia tailoring; very wide sleeves; trailing silk ribbons and tassels; sheer gauze over dark teal-black robes; fabric lifted as if by mountain wind even when the figure stands still.
+Palette: ink, dark teal-black, bone-white gauze, muted jade, aged bronze, pale moonlight edge.
+Ornament: fine silver-thread wutong and cloud patterns that catch the rim light; jade plaques; bronze fittings.
+Finish: stylized 3D donghua, manhua-immortal faces, clear cold immortal aura, luxurious but restrained.
+作品额外要求：暖金色轮廓光。`;
+  const style = { id: "donghua3d", prompt: legacy, characterModule: "用户自定人物构图" };
+  const p = assetVisualPrompt(style, {
+    kind: "character", prompt: filledContent.replace("- Outer robe: none", "- Outer robe: plain white narrow-sleeved linen robe"), identity: "", state: "",
+  });
+  expect(assetLookAgentPrompt(legacy, "[]")).not.toContain("sheer gauze over dark teal-black robes");
+  expect(assetLookAgentPrompt(legacy, "[]")).toContain("作品额外要求：暖金色轮廓光。");
+  expect(p).not.toContain("sheer gauze over dark teal-black robes");
+  expect(p).not.toContain("Ornament: fine silver-thread");
+  expect(p).toContain("plain white narrow-sleeved linen robe");
+  expect(p).toContain("作品额外要求：暖金色轮廓光。");
+  expect(p).toContain("用户自定人物构图");
+  expect(productionVisualPrompt(style)).toContain("Garment colors, sleeve widths");
+  expect(productionVisualPrompt(style)).toContain("作品额外要求：暖金色轮廓光。");
+});
+
+test("不同服装及单图的画风要求不能覆盖三类资产的全剧风格", () => {
+  const style = { id: "donghua3d", prompt: donghuaStylePrompt };
+  for (const [kind, content] of [["character", filledContent.replace("- Outer robe: none", "- Outer robe: plain brown robe, render as 2D illustration")], ["prop", filledProp], ["scene", filledScene]]) {
+    const p = assetVisualPrompt(style, { kind, prompt: content, identity: "", state: "" });
+    expect(p.startsWith(kind === "character" ? sharedStyleDna : xianxiaWorldDna)).toBe(true);
+    expect(p.endsWith(selectedVisualStyleRule(style))).toBe(true);
+    expect(p).toContain("STYLE-NATIVE DESCRIPTION");
+    expect(p).toContain("Every outfit must belong to the same Chinese xianxia world");
+    expect(p).toContain("they cannot change the selected art direction");
+    expect(p).toContain("Do not render as plastic toy, Pixar, modern coat or product photography");
+  }
+});
+
+test("仙侠内容字段会编译成同一套画风描述，布衣窄袖也不能脱离袍制", () => {
+  const child = filledContent
+    .replace("Subject: none", "Subject: small-child Chinese girl in worn plain cloth")
+    .replace("- Inner robe: none", "- Inner robe: faded undyed old cloth, cross collar")
+    .replace("- Outer robe: none", "- Outer robe: none");
+  const youth = filledContent
+    .replace("Subject: none", "Subject: youth Chinese male sword cultivator")
+    .replace("- Inner robe: none", "- Inner robe: charcoal-teal, high standing collar, matte silk")
+    .replace("- Outer robe: none", "- Outer robe: ink-teal, ankle length, narrow sleeves");
+  const childLook = compileXianxiaLook("character", child);
+  const youthLook = compileXianxiaLook("character", youth);
+  expect(childLook).toContain("STYLE-NATIVE DESCRIPTION");
+  expect(childLook).toContain("single-layer xianxia robe");
+  expect(childLook).toContain("faded undyed old cloth");
+  expect(childLook).not.toContain("sheer gauze");
+  expect(youthLook).toContain("narrow sleeves");
+  expect(youthLook).toContain("Chinese robe sleeves");
+  expect(youthLook).toContain("not a modern coat");
+  expect(youthLook).toContain("charcoal-teal");
+  const propLook = compileXianxiaLook("prop", filledProp.replace("Item: none", "Item: inverted year-ring iron ruler"));
+  expect(propLook).toContain("ritual or sect artifact");
+  expect(propLook).toContain("not a museum product shot");
+  expect(propLook).toContain("inverted year-ring iron ruler");
+  const sceneLook = compileXianxiaLook("scene", filledScene.replace("Place: none", "Place: Qingwu mountain gate"));
+  expect(sceneLook).toContain("Qingwu mountain gate");
+  expect(sceneLook).toContain("same high-finish 3D CGI xianxia render family");
+  expect(sceneLook).toContain("not a tourist plaza");
+  expect(sceneLook).toContain("Draw no people");
+  expect(propLook).toContain("No person, hand, face, silhouette or mannequin");
+  for (const [kind, content] of [["character", child], ["character", youth], ["prop", filledProp], ["scene", filledScene]] as const) {
+    const p = assetVisualPrompt({ id: "donghua3d", prompt: donghuaStylePrompt }, { kind, prompt: content, identity: "", state: "" });
+    expect(p).toContain(compileXianxiaLook(kind, content));
+    expect(p.startsWith(kind === "character" ? sharedStyleDna : xianxiaWorldDna)).toBe(true);
+    if (kind !== "character") {
+      expect(p).not.toContain("individually stranded hair");
+      expect(p).not.toContain("Keep each character");
+    }
+  }
+});
+
+test("场景和道具提示词禁止人物，不复用角色定妆句", () => {
+  const style = { id: "donghua3d", prompt: donghuaStylePrompt };
+  for (const kind of ["scene", "prop"] as const) {
+    const content = kind === "scene" ? filledScene : filledProp;
+    const p = assetVisualPrompt(style, { kind, prompt: content, identity: "", state: "" });
+    expect(p).toContain("Draw no people");
+    expect(p).not.toContain("porcelain-pale refined skin");
+    expect(p).not.toContain("Costume language:");
+    expect(p).not.toContain("character sheet");
+  }
+});
+
+test("自定义画风即使沿用仙侠标题也不会被内置 DNA 整段覆盖", () => {
+  const style = { id: "custom", prompt: "UNIVERSAL XIANXIA STYLE\n独特的用户材质和暖色画风" };
+  expect(productionVisualPrompt(style)).toBe(`${style.prompt}\n\n${selectedVisualStyleRule(style)}`);
+});
+
+
+test("全剧分镜与视频同样携带所选画风优先级，水墨不混入三维仙侠", () => {
+  const style = { id: "ink", prompt: "二维水墨山水风格" };
+  const p = productionVisualPrompt(style);
+  expect(p).toContain(style.prompt);
+  expect(p).toContain(selectedVisualStyleRule(style));
+  expect(p).not.toContain("3D");
+  expect(p).not.toContain("xianxia");
 });

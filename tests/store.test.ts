@@ -80,6 +80,39 @@ describe("持久任务规则", () => {
     expect(s.publish(t.id, 1, "旧结果").status).toBe("superseded");
     expect(s.updateTask(t.id, 1, "awaiting_user")).toBe(false);
   });
+  test("中断把当前定妆产物带到新修订，工作台仍能看见", () => {
+    const { s, p } = setup();
+    const looks = s.tasks(p.id).find((task) => task.stage === 3)!;
+    const content = JSON.stringify({
+      type: "assets",
+      data: {
+        summary: "全剧",
+        assets: [{ id: "hero", name: "沈不言", kind: "character" }],
+        voices: [],
+      },
+    });
+    s.publish(looks.id, looks.revision, content);
+    const oldRev = looks.revision;
+    s.interrupt(looks.id, oldRev, "");
+    const task = s.task(looks.id);
+    expect(task.revision).toBe(oldRev + 1);
+    const current = s.one<any>(
+      "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY createdAt DESC LIMIT 1",
+      looks.id,
+      task.revision,
+    );
+    expect(current.status).toBe("candidate");
+    expect(current.content).toBe(content);
+    expect(s.publish(looks.id, oldRev, "旧修订覆盖").status).toBe("superseded");
+    expect(
+      (s.board(p.id).artifacts as any[]).some(
+        (a) =>
+          a.taskId === looks.id &&
+          a.revision === task.revision &&
+          a.content === content,
+      ),
+    ).toBe(true);
+  });
   test("中断自己不擅自停止其他任务", () => {
     const { s, p, t } = setup();
     const next = s.list<any>(
@@ -155,8 +188,8 @@ describe("持久任务规则", () => {
     expect(s.visualStyle(p.id).version).toBe("xianxia-3d-v3");
     s.setVisualTemplate(p.id, "donghua3d");
     expect(s.visualStyle(p.id).prompt).toContain("UNIVERSAL XIANXIA STYLE");
-    expect(s.visualStyle(p.id).version).toBe("xianxia-universal-v2");
-    expect(s.visualStyle(p.id).characterModule).toContain("ASSET: character sheet");
+    expect(s.visualStyle(p.id).version).toBe("xianxia-universal-v3");
+    expect(s.visualStyle(p.id).characterModule).toContain("character sheet");
     expect(s.task(assets.id).revision).toBe(rev + 1);
     s.db.run("UPDATE project_settings SET data=? WHERE projectId=?", [
       JSON.stringify({
@@ -176,12 +209,37 @@ describe("持久任务规则", () => {
       }),
       p.id,
     ]);
-    expect(s.visualStyle(p.id).version).toBe("xianxia-universal-v2");
+    expect(s.visualStyle(p.id).version).toBe("xianxia-universal-v3");
     expect(s.visualStyle(p.id).prompt).toContain("clear cold immortal aura");
     expect(s.visualStyle(p.id).referenceImageId).toBeNull();
     expect(s.visualStyle(p.id).prompt).not.toContain(
       "High-finish 3D photorealistic cinematic",
     );
+    const looks = s.tasks(p.id).find((t) => t.stage === 3)!;
+    s.db.run("INSERT INTO media_files VALUES(?,?,?,?,?,?,?,?,?,?)", [
+      "kept-style-ref", p.id, looks.id, looks.revision, "image", "仙侠风格参考",
+      "/tmp/kept-style-ref.png", "image/png", "{}", "now",
+    ]);
+    s.db.run("UPDATE project_settings SET data=? WHERE projectId=?", [
+      JSON.stringify({
+        ...JSON.parse(
+          s.one<{ data: string }>(
+            "SELECT data FROM project_settings WHERE projectId=?",
+            p.id,
+          )!.data,
+        ),
+        visual: {
+          id: "donghua3d",
+          name: "三维仙侠国漫",
+          prompt: "High-finish 3D photorealistic cinematic xianxia production look.",
+          version: "xianxia-universal-v1",
+          referenceImageId: "kept-style-ref",
+        },
+      }),
+      p.id,
+    ]);
+    expect(s.visualStyle(p.id).version).toBe("xianxia-universal-v3");
+    expect(s.visualStyle(p.id).referenceImageId).toBe("kept-style-ref");
   });
   test("重启保留未知费用并使旧执行失效", () => {
     const { s, p, t } = setup();

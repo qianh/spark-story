@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { normalizedXianxiaDna } from "../../packages/visual-style";
 import { templates as defaultCatalog } from "../../packages/domain";
 
 type StyleCard = (typeof defaultCatalog)[number] & { version?: string };
@@ -37,10 +38,8 @@ export function StyleForm({
   const [picking, setPicking] = useState(false);
   const shown = catalog.find((t) => t.id === shownId) || initial;
   const inForce = applied?.id === shown.id;
-  const stale =
-    inForce && applied?.prompt && applied.prompt !== shown.prompt;
-  const promptText =
-    inForce && applied?.prompt && !stale ? applied.prompt : shown.prompt;
+  const promptText = normalizedXianxiaDna(inForce && applied?.prompt ? applied.prompt : shown.prompt);
+  const stale = inForce && applied?.prompt && normalizedXianxiaDna(applied.prompt) !== applied.prompt;
   if (picking)
     return (
       <>
@@ -81,14 +80,14 @@ export function StyleForm({
       )}
       {stale && (
         <p className="muted">
-          模板说明已更新。新的定妆会按当前选中的这套画风生成，不必再选一次。
+          仙侠模板中的通用服装默认值已移除；新的图片使用下方统一画风，人物衣着仍由各自设定决定。
         </p>
       )}
       <h3 className="style-prompt-title">
         {inForce ? "当前作品正在用于生成的说明" : "生成时使用的画风说明"}
       </h3>
       <p className="muted">
-        通用画风原文放在每张图最前面，后面只追加资产类型与内容。定妆、关键帧和视频都只使用作品里锁定的这一份说明。
+        每张图使用同一套全局画风，人物内容与单图调整不能覆盖它。不同衣着共用这套造型语言、材质和布光。绑定的美术参考只锁渲染，不锁衣服、年龄或五官。
       </p>
       <pre className="style-prompt">{promptText}</pre>
       {inForce && applied?.characterModule && (
@@ -110,7 +109,7 @@ export function StyleForm({
       {inForce && applied?.productionPrompt && applied.productionPrompt !== promptText && (
         <details>
           <summary>共用制作风格（场景、道具与剧情镜头）</summary>
-          <pre className="style-prompt">{applied.productionPrompt}</pre>
+          <pre className="style-prompt">{normalizedXianxiaDna(applied.productionPrompt)}</pre>
         </details>
       )}
       {inForce && onReference && <label>作品美术参考

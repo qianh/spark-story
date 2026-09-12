@@ -32,6 +32,7 @@ async function fixture() {
     budget: 10000,
     production: { minSeconds: 1, maxSeconds: 2, narrative: "reward" },
   });
+  store.patchSettings(project.id, { modelReviewEnabled: true });
   const image = await sharp({
     create: { width: 320, height: 180, channels: 3, background: "#81a883" },
   })
@@ -1351,3 +1352,20 @@ function seedVoiceSchedule(store: Store, projectId: string, speakers: string[]) 
   const art = store.publish(task.id, task.revision, '```production-json\n' + JSON.stringify(manifest) + '\n```');
   store.db.run("UPDATE artifacts SET status='approved' WHERE id=?", [art.id]);
 }
+
+test("关闭媒体审核直接交付，不转写、不调用审核模型、不循环返工", async () => {
+  const f = await fixture();
+  f.store.setModelReviewEnabled(f.project.id, false);
+  const task = f.store.tasks(f.project.id).find(t => t.stage === 3)!;
+  const runtime = new Runtime(f.store, f.root, async () => { throw Error("不应调用模型审核"); });
+  let produced = 0;
+  runtime.media.transcribe = async () => { throw Error("不应转写审核"); };
+  runtime.pipeline.produce = async () => {
+    produced++;
+    return { type: "assets", data: { summary: "用户验收", assets: [], voices: [] } };
+  };
+  await runtime.pipeline.execute(task, "manual-review", f.c, f.c, [], new AbortController().signal);
+  expect(produced).toBe(1);
+  expect(f.store.task(task.id).status).toBe("awaiting_user");
+  expect(f.store.one<any>("SELECT status FROM artifacts WHERE taskId=? ORDER BY rowid DESC LIMIT 1", task.id).status).toBe("unreviewed");
+});

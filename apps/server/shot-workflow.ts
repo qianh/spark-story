@@ -104,7 +104,7 @@ export async function produceShotPlan(
       task.revision,
       name,
       JSON.stringify(data),
-      status,
+      status === "reviewed" && !store.modelReviewEnabled(task.projectId) ? "unreviewed" : status,
       new Date().toISOString(),
     ]);
   };
@@ -121,6 +121,7 @@ export async function produceShotPlan(
     phase: string,
   ) => {
     current();
+    if (phase === "审核" && !store.modelReviewEnabled(task.projectId)) return { issues: [] };
     store.updateTask(
       task.id,
       task.revision,
@@ -144,7 +145,7 @@ export async function produceShotPlan(
     return parseResult(result);
   };
   const cp = latest(kind);
-  if (cp?.status === "reviewed")
+  if (cp?.status === "reviewed" || (cp?.status === "unreviewed" && !store.modelReviewEnabled(task.projectId)))
     return storyboardSchema.parse(JSON.parse(cp.content));
   const failures = store.one<{ n: number }>(
     "SELECT COUNT(*) AS n FROM planning_checkpoints WHERE taskId=? AND revision=? AND kind=? AND status='rejected'",
@@ -196,7 +197,7 @@ export async function produceShotPlan(
     } catch {}
   }
   let report = latest(`分镜审核 ${ep}`);
-  let issues = report
+  let issues = store.modelReviewEnabled(task.projectId) && report
     ? shotReviewSchema.parse(JSON.parse(report.content)).issues
     : [];
   let feedback = "";

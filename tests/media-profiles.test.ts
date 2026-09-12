@@ -20,6 +20,15 @@ const cli: Connection = {
   health: "installed",
   version: "test",
 };
+test("带参考图的生图指导不要求保留人物身份，避免场景道具画出人", () => {
+  const prompt = "空镜山门，无人。";
+  const r = prepareVisualRequest(cli, "image", prompt, 1, { aspect: "9:16" });
+  expect(r.prompt).toContain(prompt);
+  expect(r.prompt).not.toContain("保留指定身份");
+  expect(r.prompt).not.toContain("身份与服饰状态");
+  expect(r.prompt).toContain("不要复制未要求的人物");
+});
+
 test("Grok 文生图原样传递已完成的中文提示词，不混入视频指导", () => {
   const prompt = "高细节3D CGI仙侠，黑发青年，温和神情。";
   const r = prepareVisualRequest(cli, "image", prompt, 0, { aspect: "9:16" });

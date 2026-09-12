@@ -15,6 +15,18 @@ import {
   type Connection,
   type Artifact,
 } from "../../packages/domain";
+import {
+  applyChangePlan,
+  directorContext,
+  directorPrompt,
+  parseDirectorPlan,
+} from "./director";
+import {
+  assertChangePlan,
+  changePlanSchema,
+  formatChangePlan,
+  readStoredPlan,
+} from "../../packages/change-plan";
 
 export class Runtime {
   media: MediaService;
@@ -28,6 +40,22 @@ export class Runtime {
   ) {
     this.media = new MediaService(store, root);
     this.pipeline = new MediaPipeline(this);
+  }
+  async reviewCall(...args: Parameters<Runtime["call"]>) {
+    const [task, , , , signal] = args;
+    if (signal.aborted) throw Error("任务已中断");
+    if (!this.store.modelReviewEnabled(task.projectId)) {
+      this.store.event(task.projectId, task.id, "review.skipped", "模型审核已关闭，交由用户决定");
+      return JSON.stringify({ pass: true, feedback: "模型审核已关闭，等待用户确认" });
+    }
+    return this.call(...args);
+  }
+  submitToUser(task: Task, artifact: Artifact) {
+    this.store.db.run("UPDATE artifacts SET status='unreviewed' WHERE id=?", [artifact.id]);
+    this.store.db.run("DELETE FROM media_review_progress WHERE taskId=?", [task.id]);
+    this.store.event(task.projectId, task.id, "review.skipped", "模型审核已关闭，生成结果交由用户确认");
+    this.store.invalidateAfter(task);
+    this.store.updateTask(task.id, task.revision, "awaiting_user");
   }
   async call(
     task: Task,
@@ -218,6 +246,18 @@ export class Runtime {
       throw Error("任务正在执行，请先中断再选择定妆");
     return this.pipeline.selectAsset(task, assetId, imageId);
   }
+  async regenerateAssetPrompt(taskId: string, revision: number, assetId: string, instruction = "") {
+    const task = this.store.task(taskId);
+    if (task.revision !== revision) throw Error("任务版本已变化");
+    if (this.active.has(task.id)) throw Error("任务正在执行，请先中断再调整提示词");
+    const abort = new AbortController();
+    this.active.set(task.id, abort);
+    try {
+      return await this.pipeline.regenerateAssetPrompt(task, assetId, instruction, abort.signal);
+    } finally {
+      if (this.active.get(task.id) === abort) this.active.delete(task.id);
+    }
+  }
   async retryAsset(taskId: string, revision: number, assetId: string) {
     const task = this.store.task(taskId);
     if (task.revision !== revision) throw Error("任务版本已变化");
@@ -281,6 +321,10 @@ export class Runtime {
           return;
         const artifact =
           edited || this.store.publish(task.id, task.revision, content);
+        if (!this.store.modelReviewEnabled(task.projectId)) {
+          this.submitToUser(task, artifact);
+          break;
+        }
         this.store.updateTask(task.id, task.revision, "reviewing");
         const report = reviewSchema.parse(
           parseResult(
@@ -376,7 +420,7 @@ export class Runtime {
       this.active.get(downstream.id)?.abort();
       this.media.stopTask(downstream.id);
     }
-    this.store.invalidateAfter(task);
+    if (!message.trim()) this.store.invalidateAfter(task);
     if (!message.trim())
       for (const cp of this.store.list<{
         kind: string;
@@ -421,15 +465,13 @@ export class Runtime {
     this.active.set(task.id, controller);
     try {
       const master = this.store.binding("主模型");
-      const result = interventionSchema.parse(
-        parseResult(
-          await this.call(
-            task,
-            `intervention-${interventionId}`,
-            master,
-            `你是主控 Agent。用户中断了${task.title}，意见为：${JSON.stringify(message)}。判断要求是否足够明确以直接继续。若明确，clear=true，instruction忠实转述用户要求；若只表示不满意，clear=false，并给出具体修改建议供用户确认。不要替用户发明明确要求。返回JSON：{"clear":boolean,"instruction":"执行要求或建议方案","explanation":"判断及下游影响说明"}。当前产物：${JSON.stringify(this.store.list<Artifact>("SELECT * FROM artifacts WHERE taskId=? ORDER BY createdAt DESC LIMIT 1", task.id))}`,
-            controller.signal,
-          ),
+      const raw = parseResult(
+        await this.call(
+          task,
+          `intervention-${interventionId}`,
+          master,
+          directorPrompt(directorContext(this, task.projectId), message),
+          controller.signal,
         ),
       );
       if (
@@ -437,22 +479,37 @@ export class Runtime {
         this.store.task(task.id).revision !== task.revision
       )
         return;
-      const downstream = this.store.downstream(task);
-      downstream.forEach((t) => this.active.get(t.id)?.abort());
-      this.store.invalidateAfter(task);
+      let plan = changePlanSchema.safeParse(raw).success
+        ? changePlanSchema.parse(raw)
+        : changePlanSchema.parse(interventionSchema.parse(raw));
+      try {
+        plan = parseDirectorPlan(plan);
+      } catch (error) {
+        const explanation = error instanceof Error ? error.message : String(error);
+        plan = { ...plan, clear: false, instruction: explanation, explanation };
+        this.store.db.run(
+          "UPDATE interventions SET proposal=?,status='awaiting_confirmation' WHERE id=?",
+          [JSON.stringify(plan), interventionId],
+        );
+        this.store.updateTask(task.id, task.revision, "needs_user", explanation);
+        this.store.event(task.projectId, task.id, "master.message", explanation);
+        this.active.delete(task.id);
+        return;
+      }
+      const waitForConfirm = !plan.clear || plan.change.length > 0;
       this.store.db.run(
         "UPDATE interventions SET proposal=?,status=? WHERE id=?",
         [
-          result.instruction,
-          result.clear ? "applied" : "awaiting_confirmation",
+          JSON.stringify(plan),
+          waitForConfirm ? "awaiting_confirmation" : "applied",
           interventionId,
         ],
       );
       this.store.db.run(
         "UPDATE tasks SET instruction=?,status=? WHERE id=? AND revision=?",
         [
-          result.instruction,
-          result.clear ? "ready" : "needs_user",
+          plan.instruction,
+          waitForConfirm ? "needs_user" : "ready",
           task.id,
           task.revision,
         ],
@@ -461,10 +518,10 @@ export class Runtime {
         task.projectId,
         task.id,
         "master.message",
-        result.explanation + "\n" + result.instruction,
+        plan.change.length ? formatChangePlan(plan) : plan.explanation + "\n" + plan.instruction,
       );
       this.active.delete(task.id);
-      if (result.clear) this.start(task.id, task.revision);
+      if (!waitForConfirm) this.start(task.id, task.revision);
     } catch (e) {
       if (this.store.task(task.id).revision === task.revision) {
         const error = e instanceof Error ? e.message : String(e);
@@ -496,6 +553,37 @@ export class Runtime {
       throw Error("没有待确认的修改方案");
     const task = this.store.task(i.taskId);
     if (task.revision !== i.revision) throw Error("该方案已过期");
+    const plan = readStoredPlan(i.proposal);
+    if (plan?.change.length) {
+      assertChangePlan(plan);
+      this.store.db.run("UPDATE interventions SET status='applied' WHERE id=?", [
+        interventionId,
+      ]);
+      this.store.updateTask(task.id, task.revision, "coordinating");
+      const controller = new AbortController();
+      this.active.set(task.id, controller);
+      void applyChangePlan(this, task.projectId, plan, controller.signal)
+        .then(() => {
+          if (this.store.task(task.id).revision !== task.revision) return;
+          this.store.updateTask(task.id, task.revision, "awaiting_user");
+        })
+        .catch((error) => {
+          if (this.store.task(task.id).revision !== task.revision) return;
+          const message = error instanceof Error ? error.message : String(error);
+          this.store.updateTask(
+            task.id,
+            task.revision,
+            "needs_user",
+            `方案已确认，执行未完成：${message}`,
+          );
+          this.store.event(task.projectId, task.id, "task.error", message);
+        })
+        .finally(() => {
+          if (this.active.get(task.id) === controller)
+            this.active.delete(task.id);
+        });
+      return;
+    }
     this.store.db.run("UPDATE interventions SET status='applied' WHERE id=?", [
       interventionId,
     ]);

@@ -243,6 +243,7 @@ export function SeriesPlanningProgress({
             ·{" "}
             {{
               reviewed: isScript ? "剧本内容审核通过" : "分集审核通过",
+              unreviewed: "已生成，待你确认",
               candidate: "待审核",
               rejected: "未通过，待修改",
             }[p.status] || p.status}

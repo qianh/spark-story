@@ -11,15 +11,15 @@ test("点开画风先展示生成说明，而不是直接列出全部模板", ()
   expect(html).toContain("三维仙侠国漫");
   expect(html).toContain("当前作品画风");
   expect(html).toContain("生成时使用的画风说明");
-  expect(html).toContain("定妆、关键帧和视频都只使用作品里锁定的这一份说明");
-  expect(html).toContain("通用画风原文");
-  expect(html).toContain("后面只追加资产类型与内容");
+  expect(html).toContain("每张图使用同一套全局画风");
+  expect(html).toContain("人物内容与单图调整不能覆盖它");
+  expect(html).toContain("绑定的美术参考只锁渲染，不锁衣服、年龄或五官");
   expect(html).toContain(donghuaStylePrompt.slice(0, 40));
   expect(html).toContain("更换其他画风");
   expect(html).not.toContain("INK &amp; SILENCE");
 });
 
-test("选中画风模板升级后，新定妆按当前模板生成，不必再点应用", () => {
+test("画风说明展示作品实际锁定内容，不以模板目录覆盖自定义画风", () => {
   const html = renderToStaticMarkup(
     <StyleForm
       current="donghua3d"
@@ -43,10 +43,9 @@ test("选中画风模板升级后，新定妆按当前模板生成，不必再�
     />,
   );
   expect(html).toContain("当前作品画风");
-  expect(html).toContain("不必再选一次");
-  expect(html).toContain("新模板文本：高细节3D CGI仙侠");
+  expect(html).not.toContain("新模板文本：高细节3D CGI仙侠");
   expect(html).not.toContain("按当前模板重新应用");
-  expect(html).not.toContain("作品锁定：高完成度东方仙侠");
+  expect(html).toContain("作品锁定：高完成度东方仙侠");
 });
 
 test("从模板库点开未应用画风时，可看到说明并应用到当前作品", () => {

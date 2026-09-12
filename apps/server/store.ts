@@ -133,6 +133,21 @@ export class Store {
     );
     return row ? JSON.parse(row.data) : {};
   }
+  setModelReviewEnabled(projectId: string, enabled: boolean) {
+    this.project(projectId);
+    this.db.transaction(() => {
+      this.patchSettings(projectId, { modelReviewEnabled: enabled });
+      if (enabled) {
+        // Re-open unreviewed deliveries so the user can run the review before approval.
+        this.db.run("UPDATE tasks SET status='paused' WHERE projectId=? AND status='awaiting_user' AND EXISTS (SELECT 1 FROM artifacts a WHERE a.taskId=tasks.id AND a.revision=tasks.revision AND a.status='unreviewed')", [projectId]);
+        this.db.run("UPDATE planning_checkpoints SET status='candidate' WHERE status='unreviewed' AND taskId IN (SELECT id FROM tasks WHERE projectId=?)", [projectId]);
+        this.db.run("UPDATE artifacts SET status='candidate' WHERE status='unreviewed' AND taskId IN (SELECT id FROM tasks WHERE projectId=?)", [projectId]);
+      }
+    })();
+  }
+  modelReviewEnabled(projectId: string) {
+    return this.settings(projectId).modelReviewEnabled === true;
+  }
   visualStyle(projectId: string) {
     const settings = this.settings(projectId);
     const saved = settings.visual;
@@ -141,12 +156,20 @@ export class Store {
       saved?.id === "donghua3d" &&
       /^xianxia-(?:style-dna|universal)-v\d+$/.test(saved.version || "") &&
       saved.version !== donghuaStyleVersion
-    )
+    ) {
+      const keepRef =
+        saved.referenceImageId &&
+        this.one(
+          "SELECT id FROM media_files WHERE id=? AND projectId=? AND kind='image'",
+          saved.referenceImageId,
+          projectId,
+        );
       return {
         ...catalogVisualStyle("donghua3d"),
-        referenceImageId: null,
+        referenceImageId: keepRef ? saved.referenceImageId : null,
         visualRevision,
       };
+    }
     if (saved?.id && typeof saved.prompt === "string" && saved.prompt)
       return { ...saved, visualRevision };
     return { ...catalogVisualStyle(this.project(projectId).template), visualRevision };
@@ -494,10 +517,10 @@ export class Store {
         !a ||
         a.taskId !== taskId ||
         a.revision !== revision ||
-        a.status !== "reviewed" ||
+        !(a.status === "reviewed" || (a.status === "unreviewed" && !this.modelReviewEnabled(t.projectId))) ||
         !this.canRun(t)
       )
-        throw Error("审核版本已变化，或尚未通过主控审核");
+        throw Error("产物版本已变化，或尚未准备好交由用户确认");
       const issues = this.validateArtifact(t, a.content);
       if (issues.length) throw Error(issues.join("；"));
       this.db.run(
@@ -526,10 +549,44 @@ export class Store {
       );
     })();
   }
+  latestArtifact(taskId: string, revision = this.task(taskId).revision) {
+    return this.one<Artifact>(
+      "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY createdAt DESC LIMIT 1",
+      taskId,
+      revision,
+    );
+  }
+  replaceApprovedContent(taskId: string, content: string) {
+    const t = this.task(taskId);
+    const issues = this.validateArtifact(t, content);
+    if (issues.length) throw Error(issues.join("；"));
+    return this.db.transaction(() => {
+      this.db.run(
+        "UPDATE artifacts SET status='superseded' WHERE taskId=? AND revision=? AND status IN ('approved','reviewed')",
+        [taskId, t.revision],
+      );
+      const a = this.publish(taskId, t.revision, content);
+      this.db.run("UPDATE artifacts SET status='approved' WHERE id=?", [a.id]);
+      if (t.status !== "approved") this.updateTask(taskId, t.revision, "approved");
+      if (t.stage === 1) this.syncEpisodes(t, content);
+      if (t.stage === 7) {
+        const story = structured(content, storySchema);
+        if (story?.lookRegistry)
+          this.patchSettings(t.projectId, { lookRegistry: story.lookRegistry });
+      }
+      this.event(t.projectId, t.id, "director.revised", `${t.title}已按确认方案改写。`);
+      return a;
+    })();
+  }
   interrupt(taskId: string, revision: number, message: string) {
     return this.db.transaction(() => {
       const t = this.task(taskId);
       if (t.revision !== revision) throw Error("任务版本已变化");
+      const latest = this.one<Artifact>(
+        "SELECT * FROM artifacts WHERE taskId=? AND revision=? ORDER BY createdAt DESC LIMIT 1",
+        taskId,
+        revision,
+      );
       this.db.run(
         "UPDATE tasks SET revision=revision+1,status='coordinating',round=0,error='',updatedAt=? WHERE id=?",
         [now(), taskId],
@@ -550,6 +607,7 @@ export class Store {
         "task.interrupted",
         `子 Agent 已停止新动作，并向主控汇报：${message || "用户手动暂停"}`,
       );
+      if (latest) this.publish(taskId, revision + 1, latest.content);
       return { interventionId, revision: revision + 1 };
     })();
   }
@@ -565,7 +623,7 @@ export class Store {
     if (["running", "reviewing", "coordinating"].includes(t.status))
       throw Error("请先暂停故事任务，再提交章节修改");
     const structure = this.one<{ content: string }>(
-      "SELECT content FROM planning_checkpoints WHERE taskId=? AND revision=? AND kind='故事结构' AND status='reviewed' ORDER BY rowid DESC LIMIT 1",
+      "SELECT content FROM planning_checkpoints WHERE taskId=? AND revision=? AND kind='故事结构' AND status IN ('reviewed','unreviewed') ORDER BY rowid DESC LIMIT 1",
       taskId,
       revision,
     );
@@ -993,6 +1051,7 @@ export class Store {
         ...this.project(projectId),
         visualStyle: this.visualStyle(projectId),
       },
+      modelReviewEnabled: this.modelReviewEnabled(projectId),
       production: this.productionRules(projectId),
       planningCheckpoints: this.list(
         "SELECT p.* FROM planning_checkpoints p JOIN tasks t ON t.id=p.taskId WHERE t.projectId=? ORDER BY p.createdAt DESC",

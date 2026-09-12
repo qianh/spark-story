@@ -25,6 +25,7 @@ async function fixture(generator: typeof generate) {
     template: "cel",
     budget: 0,
   });
+  s.patchSettings(p.id, { modelReviewEnabled: true });
   const c: Connection = {
     id: "cli",
     name: "测试执行器",
@@ -224,4 +225,70 @@ test("模糊反馈形成方案且等待用户，开始按钮不能绕过确认",
   expect(s.one<any>("SELECT status FROM interventions")!.status).toBe(
     "awaiting_confirmation",
   );
+});
+
+test("模型审核默认关闭，生成后由用户确认；重新开启可审核已有产物", async () => {
+  let reviews = 0, generations = 0;
+  const { s, r, t } = await fixture(async (_c, prompt) => {
+    if (prompt.startsWith("你是主控")) {
+      reviews++;
+      return JSON.stringify({ pass: true, feedback: "通过" });
+    }
+    generations++;
+    return "# 用户决定的故事概要";
+  });
+  // Simulate an existing project that has never saved this setting.
+  s.patchSettings(t.projectId, { modelReviewEnabled: undefined });
+  expect(s.modelReviewEnabled(t.projectId)).toBe(false);
+  expect(s.board(t.projectId).modelReviewEnabled).toBe(false);
+  r.start(t.id, t.revision);
+  await waitFor(() => !r.active.has(t.id));
+  expect(reviews).toBe(0);
+  expect(generations).toBe(1);
+  expect(s.task(t.id).status).toBe("awaiting_user");
+  const a = s.one<{ id: string; status: string }>("SELECT id,status FROM artifacts WHERE taskId=? ORDER BY rowid DESC LIMIT 1", t.id)!;
+  expect(a.status).toBe("unreviewed");
+  s.setModelReviewEnabled(t.projectId, true);
+  expect(s.task(t.id).status).toBe("paused");
+  expect(() => s.approve(t.id, t.revision, a.id)).toThrow();
+  r.start(t.id, t.revision);
+  await waitFor(() => !r.active.has(t.id));
+  expect(reviews).toBe(1);
+  expect(generations).toBe(1);
+  s.approve(t.id, t.revision, a.id);
+  expect(s.task(t.id).status).toBe("approved");
+});
+
+test("空意见中断是暂停，定妆产物仍挂在当前修订", async () => {
+  const { s, r, t } = await fixture(async () => "");
+  const looks = s.tasks(t.projectId).find((task) => task.stage === 3)!;
+  s.publish(
+    looks.id,
+    looks.revision,
+    JSON.stringify({
+      type: "assets",
+      data: {
+        summary: "全剧",
+        assets: [{ id: "hero", name: "沈不言", kind: "character" }],
+        voices: [],
+      },
+    }),
+  );
+  r.intervene(looks.id, looks.revision, "");
+  const paused = s.task(looks.id);
+  expect(paused.status).toBe("paused");
+  const artifact = (s.board(t.projectId).artifacts as any[]).find(
+    (a) => a.taskId === looks.id && a.revision === paused.revision,
+  );
+  expect(artifact?.content).toContain("沈不言");
+});
+test("关闭审核的交付可直接确认，但过期版本仍不能确认", async () => {
+  const { s, r, t } = await fixture(async () => "故事概要");
+  s.setModelReviewEnabled(t.projectId, false);
+  r.start(t.id, t.revision);
+  await waitFor(() => !r.active.has(t.id));
+  const a = s.one<{ id: string }>("SELECT id FROM artifacts WHERE taskId=? ORDER BY rowid DESC LIMIT 1", t.id)!;
+  expect(() => s.approve(t.id, t.revision + 1, a.id)).toThrow();
+  s.approve(t.id, t.revision, a.id);
+  expect(s.task(t.id).status).toBe("approved");
 });

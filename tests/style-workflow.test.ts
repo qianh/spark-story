@@ -24,6 +24,7 @@ function setup(
 ) {
   const store = new Store(":memory:");
   const project = store.createProject({ name: "画风全流程", source: "信物传承", inputType: "idea", aspect: "16:9", template, budget: 0 });
+  store.patchSettings(project.id, { modelReviewEnabled: true });
   const calls: { prompt: string; options: any; refs: string[]; force?: boolean }[] = [];
   const stats = { inflight: 0, peak: 0 };
   const pipeline = new MediaPipeline({
@@ -174,8 +175,42 @@ test("通用仙侠独立生图，不向其他人物和道具传递沈不言", as
     expect(f.calls[0].prompt).toContain("Shen Buyan");
     const later = f.calls.slice(1);
     expect(later.every((c) => c.prompt.startsWith("UNIVERSAL XIANXIA STYLE\n"))).toBe(true);
-    expect(later.every((c) => !/REFERENCE ROLES|SAME SERIES STAGE|MODULE —/.test(c.prompt))).toBe(true);
+    expect(later.every((c) => c.prompt.includes("STYLE-NATIVE DESCRIPTION"))).toBe(true);
+    expect(later.every((c) => !/SAME SERIES STAGE|MODULE —/.test(c.prompt))).toBe(true);
     expect(later.every((c) => c.refs.length === 0)).toBe(true);
+    expect(later.every((c) => !c.prompt.includes("REFERENCE ROLES"))).toBe(true);
+  } finally {
+    f.store.db.close();
+  }
+});
+
+test("通用仙侠绑定美术参考后，每张图只锁渲染不锁身份", async () => {
+  const f = setup("donghua3d", () => ({ voices: [] }));
+  try {
+    const task = f.store.tasks(f.project.id).find((t) => t.stage === 3)!;
+    f.store.db.run("INSERT INTO media_files VALUES(?,?,?,?,?,?,?,?,?,?)", [
+      "style-ref", f.project.id, task.id, task.revision, "image", "仙侠风格参考",
+      "test-image.png", "image/png", "{}", new Date().toISOString(),
+    ]);
+    f.store.setVisualReference(f.project.id, "style-ref");
+    const girl = {
+      ...shenLook(),
+      id: "su-wanqing:child",
+      name: "苏晚晴",
+      prompt: shenLook().prompt.replace("Shen Buyan", "Su Wanqing").replace("youth Chinese male", "child Chinese girl"),
+    };
+    await f.produce({
+      type: "assets",
+      data: { summary: "带风格参考", assets: [shenLook(), girl, prop()], voices: [] },
+    }).catch((error) => {
+      if (!String(error.message).includes("声音")) throw error;
+    });
+    expect(f.store.visualStyle(f.project.id).referenceImageId).toBe("style-ref");
+    expect(f.calls.length).toBeGreaterThanOrEqual(3);
+    expect(f.calls.every((c) => c.refs.includes("style-ref"))).toBe(true);
+    expect(f.calls.every((c) => c.prompt.includes("REFERENCE ROLES"))).toBe(true);
+    expect(f.calls.every((c) => c.prompt.includes("style high"))).toBe(true);
+    expect(f.calls.every((c) => c.prompt.includes("likeness low") || c.prompt.includes("Do not copy the person"))).toBe(true);
   } finally {
     f.store.db.close();
   }
@@ -298,7 +333,7 @@ test("已确认定妆可开新修订追加后集，保留已有资产", async ()
   }
 });
 
-test("通用仙侠即使保存了人物主参考，也不传给其他角色、道具和空景", () => {
+test("通用仙侠即使保存了人物主参考，也只作为画风参考，不复制身份", () => {
   const f = setup("donghua3d");
   try {
     f.store.bindMasterLookRef(f.project.id, "shen-reference");
@@ -307,10 +342,13 @@ test("通用仙侠即使保存了人物主参考，也不传给其他角色、�
     const other = { ...shenLook(), id: "gu:youth", name: "顾行舟" };
     const scene = { ...source, id: "gate:main", name: "山门", kind: "scene" as const };
     for (const asset of [other, scene, { ...source, kind: "prop" as const, id: "sword:main" }]) {
-      expect(f.pipeline.assetReferences(task, asset, [source, asset]).ids).toEqual([]);
+      const refs = f.pipeline.assetReferences(task, asset, [source, asset]);
+      expect(refs.ids).toEqual(["shen-reference"]);
+      expect(refs.notes).toContain("style high");
+      expect(refs.notes).toMatch(/likeness low|Do not copy the person|Draw no people/);
     }
     expect(() => f.pipeline.assetReferences(task, { ...scene, sourceAssetId: source.id }, [source, scene])).toThrow("场景定妆只能使用场景参考");
-    expect(f.pipeline.assetReferences(task, other, [other], "gu-own-reference").ids).toEqual(["gu-own-reference"]);
+    expect(f.pipeline.assetReferences(task, other, [other], "gu-own-reference").ids).toEqual(["gu-own-reference", "shen-reference"]);
   } finally { f.store.db.close(); }
 });
 
@@ -503,5 +541,21 @@ test("恢复修订号变化仍沿用已有定妆计划，不自动规划后集",
     const result = await f.pipeline.produce(task, "test", {} as Connection, [], "", { type: "assets", data: { summary: "当前批次", lookPlanRevision: task.revision - 1, assets: [prop()], voices: [] } }, new AbortController().signal, undefined, true);
     expect(plans).toBe(0);
     expect((result.data as any).assets).toHaveLength(1);
+  } finally { f.store.db.close(); }
+});
+
+test("关闭审核后复用旧失败图片，不因审核反馈再次生图", async () => {
+  const f = setup("cel", () => ({ voices: [] }));
+  try {
+    await f.produce({ type: "assets", data: { summary: "玉牌", assets: [prop()], voices: [] } });
+    const saved = f.checkpoint();
+    const asset = saved.data.assets[0];
+    asset.imageReview = { imageId: asset.imageId, prompt: asset.generationPrompt, pass: false, feedback: "颜色偏浅" };
+    asset.imageRepairFeedback = "颜色偏浅";
+    f.store.setModelReviewEnabled(f.project.id, false);
+    f.calls.length = 0;
+    await f.produce(saved);
+    expect(f.calls).toHaveLength(0);
+    expect(f.checkpoint().data.assets[0].imageId).toBe(asset.imageId);
   } finally { f.store.db.close(); }
 });

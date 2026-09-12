@@ -365,6 +365,55 @@ test("定妆卡片提供单张重新生成，不进入整体编辑", () => {
   expect(html).toContain("沈不言");
 });
 
+test("抽卡候选的放大预览不套在选为正式定妆按钮里", () => {
+  const file = (id: string, name: string) => ({
+    id,
+    projectId: "p",
+    taskId: "t",
+    revision: 1,
+    kind: "image" as const,
+    name,
+    path: id + ".png",
+    mime: "image/png",
+    metadata: "{}",
+    createdAt: "",
+  });
+  const html = renderToStaticMarkup(
+    <BundleView
+      content={JSON.stringify({
+        type: "assets",
+        data: {
+          summary: "定妆",
+          assets: [
+            {
+              id: "hero",
+              name: "沈不言",
+              kind: "character",
+              prompt: "青衫",
+              imageId: "img-1",
+              candidates: ["img-1", "img-2"],
+            },
+          ],
+          voices: [],
+        },
+      })}
+      files={[file("img-1", "正式.png"), file("img-2", "候选.png")]}
+      busy={false}
+      onSave={() => {}}
+      onSelectAsset={() => {}}
+    />,
+  );
+  expect(html).toContain("抽卡候选，选中后才替换正式定妆");
+  expect(html).toContain("选为正式定妆");
+  expect(html).toContain("放大预览 候选.png");
+  const selectStart = html.lastIndexOf("<button", html.indexOf("选为正式定妆"));
+  const selectEnd = html.indexOf("</button>", html.indexOf("选为正式定妆"));
+  const selectHtml = html.slice(selectStart, selectEnd);
+  expect(selectHtml).toContain("选为正式定妆");
+  expect(selectHtml).not.toContain("放大预览");
+  expect(selectHtml).not.toContain("media-preview");
+});
+
 test("定妆网格不展示同一地点的视图卡片", () => {
   const html = renderToStaticMarkup(
     <BundleView
@@ -583,7 +632,7 @@ test("全剧其他角色待配音不阻塞当前批次进度，声音卡仍保�
 });
 
 test("定妆卡片显示审核锁，不通过原因点开查看", () => {
-  const html = renderToStaticMarkup(<BundleView files={[]} onSave={() => {}} busy={false} content={JSON.stringify({
+  const html = renderToStaticMarkup(<BundleView modelReviewEnabled files={[]} onSave={() => {}} busy={false} content={JSON.stringify({
     type: "assets", data: { summary: "逐张审核", voices: [], assets: [
       { id: "a", name: "已通过玉牌", kind: "prop", prompt: "玉牌", imageId: "img-a", generationPrompt: "玉牌", imageReview: { imageId: "img-a", prompt: "玉牌", pass: true, feedback: "通过" } },
       { id: "b", name: "待修正玉牌", kind: "prop", prompt: "玉牌", imageId: "img-b", generationPrompt: "玉牌", imageReview: { imageId: "img-b", prompt: "玉牌", pass: false, feedback: "边缘被裁切" } },
@@ -618,4 +667,15 @@ test("不通过原因与提示词弹框展示正文", () => {
   expect(prompt).toContain("提示词");
   expect(prompt).toContain("本图生成时的画风与要求");
   expect(prompt).toContain("竖屏9:16单人全身定妆");
+});
+
+test("默认关闭审核，不显示待自动重试，保留历史审核意见入口", () => {
+  const html = renderToStaticMarkup(<BundleView files={[]} onSave={() => {}} busy={false} content={JSON.stringify({
+    type: "assets", data: { summary: "用户验收", voices: [], assets: [
+      { id: "a", name: "玉牌", kind: "prop", prompt: "玉牌", imageId: "img", imageReview: { imageId: "img", prompt: "玉牌", pass: false, feedback: "偏亮" } },
+    ] },
+  })} />);
+  expect(html).toContain("模型审核已关闭");
+  expect(html).toContain("历史审核意见");
+  expect(html).not.toContain("待自动重试");
 });

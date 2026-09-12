@@ -153,6 +153,13 @@ const server = Bun.serve<{
         store.setVisualReference(visualReference[1], z.object({ referenceImageId: z.string() }).parse(await body(req)).referenceImageId);
         return json({ ok: true });
       }
+      const reviewSettings = path.match(/^\/api\/projects\/([^/]+)\/model-review$/);
+      if (reviewSettings && req.method === "PUT") {
+        const { enabled } = z.object({ enabled: z.boolean() }).strict().parse(await body(req));
+        store.project(reviewSettings[1]);
+        store.setModelReviewEnabled(reviewSettings[1], enabled);
+        return json({ enabled });
+      }
       const production = path.match(/^\/api\/projects\/([^/]+)\/production$/);
       if (production && req.method === "PUT")
         return json(store.saveProductionRules(production[1], await body(req)));
@@ -265,6 +272,16 @@ const server = Bun.serve<{
             value.imageId,
           ),
         );
+      }
+      const regenerateAssetPrompt = path.match(/^\/api\/tasks\/([^/]+)\/regenerate-asset-prompt$/);
+      if (regenerateAssetPrompt && req.method === "POST") {
+        const value = revision.extend({
+          assetId: z.string().trim().min(1).max(120),
+          instruction: z.string().trim().max(10000).default(""),
+        }).parse(await body(req));
+        return json(await runtime.regenerateAssetPrompt(
+          regenerateAssetPrompt[1], value.revision, value.assetId, value.instruction,
+        ));
       }
       const retryAsset = path.match(/^\/api\/tasks\/([^/]+)\/retry-asset$/);
       if (retryAsset && req.method === "POST") {

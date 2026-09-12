@@ -1,20 +1,32 @@
-export const donghuaStyleVersion = "xianxia-universal-v2";
+export const donghuaStyleVersion = "xianxia-universal-v3";
+
+export const xianxiaWorldDna = `UNIVERSAL XIANXIA STYLE
+High-finish 3D CGI Chinese xianxia production look from one same series.
+Art direction: refined stylized-3D architecture, carved wood, grey tile, bronze, jade and cloth materials with movie-grade response. Not plastic toy 3D, not Pixar, not live-action photography, not flat 2D illustration, not chibi.
+Palette treatment: harmonious restrained saturation and consistent tonal grading across the series. Preserve the specified local object and set colors.
+Light: readable key plus cool moonlight rim on carved wood, tile edges and jade; movie-grade material response.
+Materials: silk sheen, cloth weave, slightly translucent jade, carved wood, softly brushed metal when present.
+Finish: high-finish 3D CGI forms, depth and surface detail, with a clear cold immortal aura. Keep the same rendering medium across characters, props, sets and shots.
+Air: pale taupe-gray luminous mist; never a dead brown studio void, never an empty white product-shot void.
+Same visual family for characters, props, and sets.
+Occupancy: empty of figures. Draw no people, cultivators, hands, faces, silhouettes, mannequins or human shadows.`;
 
 export const sharedStyleDna = `UNIVERSAL XIANXIA STYLE
-Chinese 3D xianxia donghua from one same series.
-Immortal xianxia look: tall slender proportions; layered xianxia tailoring; very wide sleeves; trailing silk ribbons and tassels; sheer gauze over dark teal-black robes; fabric lifted as if by mountain wind even when the figure stands still.
-Palette: ink, dark teal-black, bone-white gauze, muted jade, aged bronze, pale moonlight edge.
-Light: soft donghua key plus cool moonlight rim on hair, sleeve edges, carved wood and jade.
-Ornament: fine silver-thread wutong and cloud patterns that catch the rim light; jade plaques; bronze fittings.
-Finish: stylized 3D donghua, manhua-immortal faces, clear cold immortal aura, luxurious but restrained.
-Air: faint luminous mist, never a dead brown studio void.
+High-finish 3D CGI Chinese xianxia production look from one same series — the same render family as a luxury immortal-drama character sheet.
+Art direction: refined stylized-3D with couture-precise garment construction, individually stranded hair, porcelain-pale refined skin and deep clean bone structure. Keep each character’s specified age, build and species. Not plastic toy 3D, not Pixar, not live-action photography, not flat 2D illustration, not chibi.
+Costume language: every garment — including plain cloth, worn cloth, child cloth, formal and ornate — is built with traditional Chinese xianxia tailoring: cross-collar or standing-collar inner layer, long robe silhouette, natural silk or cloth drape, visible weave and fold, controlled fabric weight. Garment colors, sleeve widths, layers, embroidery and accessories come only from the character content. Do not add gauze, ribbons, tassels, jade plaques or embroidery unless specified. Never turn a robe into a modern coat, padded jacket or plastic costume.
+Palette treatment: harmonious restrained saturation and consistent tonal grading across the series. Preserve the specified local garment and object colors; never recolor all characters into a default robe.
+Light: readable studio key from front-left; soft cool moonlight rim on hair, sleeve edges, carved wood and jade; movie-grade material response.
+Materials: silk sheen, cloth weave, slightly translucent jade, carved wood, softly brushed metal when present. Ornament is character- or object-specific, never a mandatory shared costume.
+Finish: high-finish 3D CGI forms, depth, facial modeling and surface detail, with a clear cold immortal aura. Keep the same rendering medium across characters, props, sets and shots.
+Air: pale taupe-gray luminous mist; never a dead brown studio void, never an empty white product-shot void.
 Same visual family for characters, props, and sets.`;
 
-export const characterSheetModule = `ASSET: character sheet. Full-body standing, three-quarter, feet visible, pale mist studio. One person.`;
+export const characterSheetModule = `ASSET: high-finish 3D CGI character sheet. Full-body standing, three-quarter, feet visible, pale taupe-gray mist studio. One person.`;
 
-export const propSheetModule = `ASSET: hero prop. One object, three-quarter, pale mist studio or single dark wood slab.`;
+export const propSheetModule = `ASSET: high-finish 3D CGI hero prop. One ritual or sect object, three-quarter, pale taupe-gray mist studio or single dark wood slab. Same material response as the series costumes.`;
 
-export const sceneSheetModule = `ASSET: donghua set plate. Monumental xianxia architecture, flying eaves, dougong, ceremonial stairs, designed mist, empty set.`;
+export const sceneSheetModule = `ASSET: high-finish 3D CGI xianxia set plate. Monumental immortal-sect architecture, dark timber, grey tile, flying eaves, dougong, ceremonial stairs, designed mist, empty set. Same render family as the series. No people.`;
 
 /** Catalog `prompt` is the shared DNA. Character STYLE LOCK is now DNA + character module. */
 export const donghuaStylePrompt = sharedStyleDna;
@@ -58,7 +70,7 @@ View: full item, slight three-quarter`;
 
 export const sceneContentTemplate = `CONTENT — SCENE (fill per location):
 
-Place: [sect mountain gate / cliff pavilion / meditation hall / bamboo courtyard / night stone stair]
+Place: [sect mountain gate / cliff pavilion / sect main hall / bamboo courtyard / night stone stair]
 Time / weather: [overcast day / blue hour / light rain / dry clear]
 Near camera: [columns, eaves, doors, stairs — use monumental / carved / ceremonial, never simple or ordinary]
 Mid: [axial path, courtyard, corridor]
@@ -72,8 +84,102 @@ export function isUniversalXianxia(style: VisualStyle) {
   return style.prompt.startsWith("UNIVERSAL XIANXIA STYLE");
 }
 
-export const characterIdentityRule = "Character design: the face, age, hairstyle, robe colors, garment silhouette, embroidery and personal accessories specified below belong to this character. These specific choices override generic costume examples in the shared style. Do not substitute another character's face, topknot, black robes or accessories. Keep age-appropriate proportions.";
-export const emptySceneRule = "Occupancy: strictly empty architecture and environment. No people, cultivators, distant figures, silhouettes, human reflections or human shadows.";
+export const characterIdentityRule = "Character design: the face, age, hairstyle, robe colors, garment silhouette, embroidery and personal accessories specified below belong to this character. These specific choices define character content only; they never override the selected global rendering style or xianxia costume language. Do not substitute another character's face, topknot, black robes or accessories. Keep age-appropriate proportions.";
+export const emptySceneRule = "Occupancy: strictly empty architecture and environment. Draw no people, cultivators, distant figures, silhouettes, human reflections or human shadows.";
+export const emptyPropRule = "Occupancy: one object only. No person, hand, face, silhouette or mannequin.";
+
+function contentFields(content: string) {
+  const fields: Record<string, string> = {};
+  for (const line of content.split("\n").map((l) => l.trim()).filter(Boolean)) {
+    if (
+      line.startsWith("CONTENT") ||
+      line === "Costume:" ||
+      line === "Costume specific to this character:"
+    )
+      continue;
+    const colon = line.indexOf(":");
+    if (colon < 0) continue;
+    fields[line.slice(0, colon).replace(/^- /, "")] = line.slice(colon + 1).trim();
+  }
+  return fields;
+}
+
+function isNoneValue(value?: string) {
+  const v = (value || "").trim();
+  return !v || /^none(?:\b|[,\s])/i.test(v);
+}
+
+/** Turn stored identity facts into one style-native description so images cannot drift off the selected look. */
+export function compileXianxiaLook(kind: string, content: string) {
+  content = migrateLegacyContent(content);
+  if (kind === "character") {
+    assertCharacterContent(content);
+    const f = contentFields(content);
+    const inner = f["Inner robe"] || "none";
+    const outer = f["Outer robe"] || "none";
+    const overlay = f["Overlay"] || "none";
+    const embroidery = f["Embroidery"] || f["Embroidery motif"] || "none";
+    const waist = f["Waist"] || f["Sash and waist"] || "none";
+    const extras = f["Other accessories"] || f["Unique accessories"] || "none";
+    const shoes = f["Shoes"] || "none";
+    const only =
+      content.split("\n").map((l) => l.trim()).find((l) => /^Only this one /.test(l)) ||
+      "Only this one person in frame.";
+    return [
+      "STYLE-NATIVE DESCRIPTION",
+      `Subject: ${f.Subject}. Render this exact age, build and species as high-finish 3D CGI xianxia, not plastic toy 3D and not live-action.`,
+      `Face: ${f.Face}.`,
+      `Hair: ${f.Hair}.`,
+      "Costume interpretation: every layer is traditional Chinese xianxia robe construction (cross-collar or standing-collar, long robe silhouette, cloth drape and visible weave). Specified colors and sleeve widths stay; they do not become a modern coat, jacket or school uniform.",
+      isNoneValue(inner)
+        ? "Inner robe: no separate inner color was given; keep a single xianxia cloth robe from the remaining costume facts."
+        : `Inner robe: ${inner}, cut as a xianxia robe layer with natural drape and visible weave.`,
+      isNoneValue(outer)
+        ? "Outer robe: none. Keep a single-layer xianxia robe from the inner cloth; still a full Chinese robe, not a short tunic or modern overcoat."
+        : `Outer robe: ${outer}, cut as a xianxia outer robe. Keep the specified sleeve width as Chinese robe sleeves with fabric weight, not a modern coat.`,
+      isNoneValue(overlay) ? "Overlay: none. Do not add gauze." : `Overlay: ${overlay}.`,
+      isNoneValue(embroidery) ? "Embroidery: none. Do not add motifs." : `Embroidery: ${embroidery}.`,
+      isNoneValue(waist) ? "Waist: none or plain cloth only. Do not add jade plaques or tassels." : `Waist: ${waist}.`,
+      isNoneValue(extras) || /^no /i.test(extras)
+        ? `Other accessories: ${extras || "none"}. Do not add unrequested ornaments.`
+        : `Other accessories: ${extras}.`,
+      isNoneValue(shoes) ? "Shoes: none as specified." : `Shoes: ${shoes}.`,
+      `Pose: ${f.Pose || "standing upright, hands hanging naturally at sides, weight even."}`,
+      only,
+    ].join("\n");
+  }
+  if (kind === "prop") {
+    assertPropContent(content);
+    const f = contentFields(content);
+    return [
+      "STYLE-NATIVE DESCRIPTION",
+      `Item: ${f.Item} as a high-finish 3D CGI xianxia ritual or sect artifact, not a museum product shot and not a white-void catalog photo.`,
+      `Size impression: ${f["Size impression"]}.`,
+      `Materials: ${f.Materials}, rendered with the same silk, cloth, jade, wood and metal response as the series costumes.`,
+      `Form: ${f.Form}.`,
+      `Ornament: ${f.Ornament}.`,
+      `Color accents: ${f["Color accents"]}.`,
+      `Condition: ${f.Condition}.`,
+      `Unique marks: ${f["Unique marks"]}.`,
+      `View: ${f.View}.`,
+      "Occupancy: No person, hand, face, silhouette or mannequin.",
+    ].join("\n");
+  }
+  assertSceneContent(content);
+  const f = contentFields(content);
+  return [
+    "STYLE-NATIVE DESCRIPTION",
+    `Place: ${f.Place} as a high-finish 3D CGI immortal-sect set in the same high-finish 3D CGI xianxia render family, not a tourist plaza and not a live-action temple photo.`,
+    `Time / weather: ${f["Time / weather"]}.`,
+    `Near camera: ${f["Near camera"]}, monumental xianxia construction.`,
+    `Mid: ${f.Mid}.`,
+    `Far: ${f.Far}.`,
+    `Materials: ${f.Materials}.`,
+    `Set dressing: ${f["Set dressing"]}.`,
+    "People: none. Draw no people, hands, faces, silhouettes or distant figures.",
+    `Camera: ${f.Camera}.`,
+  ].join("\n");
+}
 
 export type VisualStyle = {
   id: string;
@@ -101,13 +207,48 @@ export function visualReviewPrompt(style: VisualStyle) {
   return `选定作品画风：${productionVisualPrompt(style)}。以这份画风的造型、材质、笔触及渲染方式验收实际画面；风格不符则不通过，不得用其他画风的标准替代。`;
 }
 
+// Upgrade only the known built-in v2 paragraphs; preserve any custom additions.
+export function normalizedXianxiaDna(prompt: string) {
+  if (!prompt.startsWith("UNIVERSAL XIANXIA STYLE")) return prompt;
+  const replacements: [string, string][] = [
+    ["Chinese 3D xianxia donghua from one same series.", sharedStyleDna.split("\n")[1]],
+    ["Immortal xianxia look: tall slender proportions; layered xianxia tailoring; very wide sleeves; trailing silk ribbons and tassels; sheer gauze over dark teal-black robes; fabric lifted as if by mountain wind even when the figure stands still.", sharedStyleDna.split("\n").slice(2, 4).join("\n")],
+    ["Art direction: one coherent Chinese immortal-cultivation fantasy world, with stylized 3D donghua anatomy, faces, fabric, architecture and props. Keep each character’s specified age, build and species.", sharedStyleDna.split("\n").find(line => line.startsWith("Art direction:"))!],
+    ["Costume language: translate every outfit into this same xianxia world through traditional Chinese tailoring and stylized fabric construction. Garment colors, sleeve widths, layers, embroidery and accessories come only from the character content; plain, worn, formal and ornate outfits all share the same rendering and material treatment. Do not add gauze, ribbons, tassels, jade plaques or embroidery unless specified.", sharedStyleDna.split("\n").find(line => line.startsWith("Costume language:"))!],
+    ["Palette: ink, dark teal-black, bone-white gauze, muted jade, aged bronze, pale moonlight edge.", sharedStyleDna.split("\n").find(line => line.startsWith("Palette treatment:"))!],
+    ["Light: soft donghua key plus cool moonlight rim on hair, sleeve edges, carved wood and jade.", sharedStyleDna.split("\n").find(line => line.startsWith("Light:"))!],
+    ["Ornament: fine silver-thread wutong and cloud patterns that catch the rim light; jade plaques; bronze fittings.", sharedStyleDna.split("\n").find(line => line.startsWith("Materials:"))!],
+    ["Materials: consistent stylized silk, cloth, jade, wood and metal responses when present. Ornament is character- or object-specific, never a mandatory shared costume.", sharedStyleDna.split("\n").find(line => line.startsWith("Materials:"))!],
+    ["Finish: stylized 3D donghua, manhua-immortal faces, clear cold immortal aura, luxurious but restrained.", sharedStyleDna.split("\n").find(line => line.startsWith("Finish:"))!],
+    ["Finish: unified stylized 3D donghua forms, depth, facial modeling and surface detail, with a clear cold immortal aura. Keep the same rendering medium across characters, props, sets and shots; no shift to flat 2D illustration, live-action photography or chibi proportions.", sharedStyleDna.split("\n").find(line => line.startsWith("Finish:"))!],
+    ["Air: faint luminous mist, never a dead brown studio void.", sharedStyleDna.split("\n").find(line => line.startsWith("Air:"))!],
+  ];
+  for (const [oldText, replacement] of replacements) prompt = prompt.replace(oldText, replacement);
+  return prompt;
+}
+
+/** Asset details can vary; the selected production art direction cannot. */
+export function selectedVisualStyleRule(style: VisualStyle) {
+  const xianxia = isXianxiaLookLock(style.prompt);
+  const donghua3d = /(?:High-finish 3D CGI|3D xianxia donghua|stylized 3D donghua|三维国漫)/i.test(productionStyleDna(style));
+  return `GLOBAL STYLE PRIORITY: The selected production style above is authoritative for every image in this series: rendering medium, anatomy treatment, costume design language, materials, lighting and color grading. Asset content and local revision requests specify identity, age, species, outfit details and composition only; they cannot change the selected art direction. Interpret all described garments, accessories and environments within that style while preserving their specified colors and distinguishing details.${xianxia ? " Every outfit must belong to the same Chinese xianxia world, including plain clothing and costume changes; do not introduce modern or Western costume construction. Do not turn a simple outfit into a different art style. When the subject is architecture or a prop, draw no people, hands, faces, silhouettes or mannequins." : ""}${donghua3d ? " Render every subject with the same high-finish 3D CGI xianxia treatment. Do not render as plastic toy, Pixar, modern coat or product photography." : ""}`;
+}
+
+export function worldStyleDna(style: VisualStyle) {
+  const dna = xianxiaModules(style)?.dna || style.prompt;
+  if (!isUniversalXianxia(style)) return dna;
+  if (dna.startsWith(sharedStyleDna))
+    return `${xianxiaWorldDna}${dna.slice(sharedStyleDna.length)}`;
+  return `${dna}\n\n${emptySceneRule}`;
+}
+
 export function xianxiaModules(style: VisualStyle) {
   if (isXianxiaLookLock(style.prompt))
     return {
-      dna: sharedStyleDna,
-      character: characterSheetModule,
-      prop: propSheetModule,
-      scene: sceneSheetModule,
+      dna: normalizedXianxiaDna(style.prompt),
+      character: style.characterModule || characterSheetModule,
+      prop: style.propModule || propSheetModule,
+      scene: style.sceneModule || sceneSheetModule,
     };
   if (style.characterModule && style.propModule && style.sceneModule)
     return {
@@ -202,15 +343,15 @@ export function masterReferenceNote(kind: string) {
   if (kind === "character")
     return "Master series style reference: match render family, palette, lighting and materials at high strength (style high). Do not copy this face, age, hair, costume or identity (likeness low).";
   if (kind === "scene")
-    return "Master series style reference: match palette, materials and lighting only. Draw donghua background art / animation layout, not a mountain photo. Do not copy the person.";
-  return "Master series style reference: match palette, materials and lighting only. Do not copy the person.";
+    return "Master series style reference: match palette, materials and lighting only at high strength (style high). Empty architecture only. Draw no people. Do not copy the person, face, body, costume or pose (likeness low).";
+  return "Master series style reference: match palette, materials and lighting only at high strength (style high). One object only. Draw no people. Do not copy the person, hands, face or costume (likeness low).";
 }
 
 function joinLook(style: string, assetType: string, content: string) {
   return `${style}\n\n${assetType}\n\n${content}`;
 }
 
-export function assetVisualPrompt(
+function compileAssetVisualPrompt(
   style: VisualStyle,
   asset: {
     name?: string;
@@ -226,16 +367,24 @@ export function assetVisualPrompt(
   const modules = xianxiaModules(style);
   if (modules) {
     asset = prepareAssetForLook(asset, assets);
+    const dna = asset.kind === "character" ? modules.dna : worldStyleDna(style);
     if (asset.kind === "character") {
       assertCharacterContent(asset.prompt);
-      return joinLook(modules.dna, modules.character, isUniversalXianxia(style) ? `${characterIdentityRule}\n${asset.prompt}` : asset.prompt);
+      const native = compileXianxiaLook("character", asset.prompt);
+      return joinLook(dna, modules.character, isUniversalXianxia(style) ? `${characterIdentityRule}\n${native}` : native);
     }
     if (asset.kind === "prop") {
-      if (asset.promptFormat === "prop-content-v1") assertPropContent(asset.prompt);
-      return joinLook(modules.dna, modules.prop, asset.prompt);
+      const native =
+        asset.promptFormat === "prop-content-v1" || /CONTENT — PROP/i.test(asset.prompt)
+          ? compileXianxiaLook("prop", asset.prompt)
+          : asset.prompt;
+      return joinLook(dna, modules.prop, `${emptyPropRule}\n${native}`);
     }
-    if (asset.promptFormat === "scene-content-v1") assertSceneContent(asset.prompt);
-    return joinLook(modules.dna, modules.scene, isUniversalXianxia(style) ? `${emptySceneRule}\n${asset.prompt}` : asset.prompt);
+    const native =
+      asset.promptFormat === "scene-content-v1" || /CONTENT — SCENE/i.test(asset.prompt)
+        ? compileXianxiaLook("scene", asset.prompt)
+        : asset.prompt;
+    return joinLook(dna, modules.scene, `${emptySceneRule}\n${native}`);
   }
   if (asset.kind === "character" && style.prompt.startsWith("STYLE LOCK —")) {
     assertCharacterContent(asset.prompt);
@@ -285,6 +434,15 @@ export function assetVisualPrompt(
   return `${look}\n构图：${composition}\n资产内容：${content}\n固定身份：${asset.identity}\n当前状态：${asset.state}${style.id === "donghua3d" ? "\n融合要求：以本资产身份和状态决定内容，以以上画风决定造型、材质和布光。只输出一幅图。" : ""}`;
 }
 
+/** All compilation branches end with the same selected-style priority contract. */
+export function assetVisualPrompt(
+  style: VisualStyle,
+  asset: Parameters<typeof compileAssetVisualPrompt>[1],
+  assets: Parameters<typeof compileAssetVisualPrompt>[2] = [],
+) {
+  return `${compileAssetVisualPrompt(style, asset, assets)}\n\n${selectedVisualStyleRule(style)}`;
+}
+
 /** Review the exact generation input, including its style and reference roles. */
 export function generationReviewPrompt(prompt: string) {
   if (!prompt.trim()) return "缺少该产物实际使用的生成提示词，无法核验；不得补造验收标准或声称审核通过。";
@@ -297,10 +455,11 @@ export function assetLookAgentPrompt(
   libraryJson: string,
   registryJson = "[]",
 ) {
+  stylePrompt = normalizedXianxiaDna(stylePrompt);
   const modules =
     isXianxiaLookLock(stylePrompt) || stylePrompt.startsWith("STYLE LOCK —");
   if (modules) {
-    return `你是角色与资产 Agent。只根据外观登记和本批需要填写定妆内容，不写镜头剧情。角色 promptFormat="character-content-v1"，严格按 CONTENT 模板逐项填写；道具 promptFormat="prop-content-v1"；场景 promptFormat="scene-content-v1"。不适用写 none，未明确年龄不编造数字。内容不写画风句：禁止 cinematic、donghua、国漫、photoreal、电影感、史诗、仙气、灯光、渲染、DNA、MODULE。程序将原样拼接 通用画风原文、对应 ASSET 类型、CONTENT。
+    return `你是角色与资产 Agent。只根据外观登记和本批需要填写定妆内容，不写镜头剧情。角色 promptFormat="character-content-v1"，严格按 CONTENT 模板逐项填写；道具 promptFormat="prop-content-v1"；场景 promptFormat="scene-content-v1"。不适用写 none，未明确年龄不编造数字。内容不写画风句：禁止 cinematic、donghua、国漫、photoreal、电影感、史诗、仙气、灯光、渲染、DNA、MODULE。程序将拼接作品选定的通用画风、对应 ASSET 类型、CONTENT，并锁定全剧画风。
 人物模板：
 ${characterContentTemplate}
 道具模板：
@@ -308,14 +467,14 @@ ${propContentTemplate}
 场景模板：
 ${sceneContentTemplate}
 场景 People 必须为 none，建筑与背景严格无人，包括远处人影、倒影和剪影。人物只进入后续剧情镜头，不进入场景定妆。
-不同角色必须依据各自登记明确脸型、眉眼、发型与发饰、内外袍颜色、衣袍轮廓、纹样与专属饰物，不能套用沈不言的脸、发髻和黑袍。通用画风中的黑袍与配饰是风格示例，角色明确的服装设定优先；年龄与体型遵循该角色。来源未指定的设计细节可以按角色身份补全，不能改动已明确设定。同宗服装可有共同元素，但不能让不同角色仅换名字。
+不同角色必须依据各自登记明确脸型、眉眼、发型与发饰、内外袍颜色、衣袍轮廓、纹样与专属饰物，不能套用沈不言的脸、发髻和黑袍。全局画风决定整部剧的渲染方式、服装设计语言与材质表现，任何角色或单图调整都不得覆盖。服装颜色、层次、袖宽、纹样、配饰与年龄体型遵循该角色；朴素或华丽、不同职业和换装仍必须属于作品选定的同一世界和美术体系，采用该画风的服装剪裁与材质表现，不得因服装不同切换渲染方式。服装描述使用仙侠袍制（交领或立领、袍身、袖、襟），不要写成现代大衣、西装或夹克；布衣旧衣也必须是仙侠袍制，只是料更素、纹更少。未指定罩衫、刺绣、玉佩、流苏时不得套用通用装饰。来源未指定的设计细节可以按角色身份补全，不能改动已明确设定。同宗服装可有共同元素，但不能让不同角色仅换名字。
 禁止夜雨、黄昏、熄灯、高烧、闭眼、出剑作为剧情状态。独立佩剑不画进角色，Other accessories 写 no weapon。内容冲突时改内容，绝不改通用画风或 ASSET 类型。同一地点非变体只出一张主定妆；门外、末阶等视图不要单独建资产。成长阶段用 variantKind=growth；换装用 costume；破败用 form。
 内容禁用词（写出就会跑偏）：photoreal、live-action、pores、photorealistic landscape、real temple、tourist、ordinary、simple、worn everyday、museum antique、DSLR、National Geographic、Huangshan、readable sign、epic magic、lightning、anime、illustration。场景/建筑改用 monumental、mythic scale、ceremonial、designed、flying eaves、dougong、constructed set。道具改用 ritual、sect artifact、film prop、muted jade、aged bronze、wutong relief。
 返回 JSON {"summary":"说明","assets":[{"id":"entityId:variantId","name":"名称","kind":"character或scene或prop","promptFormat":"character-content-v1或prop-content-v1或scene-content-v1","prompt":"填好的内容","identity":"固定身份","state":"可复用形制","entityId":"实体ID","variantId":"变体ID","variantKind":"growth或costume或form","growthStage":"child|teen|youth|adult|elder或空"}],"voices":[]}。
 外观登记：${registryJson}
 可复用库：${libraryJson}
 作品通用画风（不要写入 prompt）：
-${stylePrompt}`;
+${stylePrompt}\n${selectedVisualStyleRule({ id: "selected", prompt: stylePrompt })}`;
   }
   return `你是角色与资产 Agent。根据全剧外观登记和完整故事设定，生成整部剧共享的角色、场景、道具定妆，覆盖全部已登记实体与可复用变体，不绑定任何单集。定妆是身份与形制的画像，不是关键帧：不要写入本集天气、昼夜、临时湿衣、剧情动作或具体镜头场面。雨、夜、晴、雾等环境只属于后续关键帧。角色图是单角色全身站立定妆照，中性可读光，衣物干燥，背景简洁，不把多人拼在同一图。场景画地点在清晰光线下的标准建筑与空间，不画本集夜雨或熄灯。道具画物件干燥完好的标准形制，不画被雨水打湿或使用后的状态。画风必须遵守：${stylePrompt}。每项填写 promptFormat="visual-description-v1"。prompt 是一段可直接用于生图的完整中文画面描述，合并该资产可复用的身份、服饰形制和基础外观，各写一次，约150～300字；identity 与 state 用于资产库记录，不会再次拼入生图输入，所以其中影响外观的信息必须完整体现在 prompt。state 只写服装、年龄、伤势、能力阶段，不写天气和时段。用正向描述表达表情和气质，不堆叠同义禁令。不要写通用画风词、渲染词或中英双语翻译，程序会原样添加作品画风。美术表现严格使用当前所选画风，内容不追加其他画风的渲染要求，不要写成任何现有动画角色的翻版。角色定妆只画身体、脸、头发和身上的衣服。已经单独列为 prop 的物件不要画进角色图：有佩剑资产则角色定妆无剑、不握剑、腰侧不挂剑。道具图是该物件的唯一外观来源，不要为了好看把道具画进角色定妆。本次只规划图像资产，voices 返回空数组；声音试听会在图像完成后独立规划。返回 JSON：{"summary":"说明","assets":[{"id":"稳定ID","name":"名字","kind":"character或scene或prop","promptFormat":"visual-description-v1","prompt":"完整中文画面描述","identity":"不变外貌","state":"服装、年龄、伤势或能力阶段"}],"voices":[{"character":"角色名字","voice":"可用ID","sampleText":"该角色一句适合试听的台词"}]}。从全剧外观登记提取全部实体与变体，ID 使用 entityId:variantId 并与登记一致。外观登记：${registryJson}。已有资产可通过 libraryId 引用，必须选择外观与状态都匹配的版本；新增状态创建独立资产，并用 baseLibraryId 指定基础参考版本，不覆盖旧版。每项填写 identity 与 state。不要虚构 imageId、audioId。可复用库：${libraryJson}。`;
 }
@@ -441,12 +600,17 @@ export function assertSceneContent(content: string) {
   );
 }
 
-export function productionVisualPrompt(style: VisualStyle) {
+function productionStyleDna(style: VisualStyle) {
   const modules = xianxiaModules(style);
   if (modules) return modules.dna;
   if (!style.prompt.startsWith("STYLE LOCK —")) return style.prompt;
   if (style.productionPrompt) return style.productionPrompt;
   return style.prompt;
+}
+
+/** Apply the same art-direction hierarchy to storyboards, images and video. */
+export function productionVisualPrompt(style: VisualStyle) {
+  return `${productionStyleDna(style)}\n\n${selectedVisualStyleRule(style)}`;
 }
 
 export function compileCharacterContent(content: string) {

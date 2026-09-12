@@ -42,6 +42,7 @@ async function done(r: Runtime) {
 function setup() {
   const s = new Store(":memory:");
   const p = s.createProject(input);
+  s.patchSettings(p.id, { modelReviewEnabled: true });
   return { s, p };
 }
 function bind(s: Store) {

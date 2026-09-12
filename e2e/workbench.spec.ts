@@ -352,7 +352,7 @@ test("创建项目、持久配置、打开工作区、中断与预算", async ({
   await expect(page.getByText("连接待处理", { exact: true })).toBeVisible({
     timeout: 10000,
   });
-  await page.getByRole("button", { name: "立即中断", exact: true }).click();
+  await page.getByRole("button", { name: "暂停", exact: true }).click();
   await expect(page.getByText("已暂停", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "返回阶段看板" }).click();
   await page.getByRole("button", { name: /API 已预留/ }).click();
