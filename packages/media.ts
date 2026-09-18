@@ -109,9 +109,22 @@ export const assetPlanSchema = z.object({
           pass: z.boolean(),
           feedback: z.string(),
         }).optional(),
+        contentReview: z.object({
+          pass: z.boolean(),
+          feedback: z.string(),
+          missing: z.array(z.string()).optional(),
+          wrong: z.array(z.string()).optional(),
+          prompt: z.string(),
+        }).optional(),
         generationStyleVersion: z.string().optional(),
         generationStyleKey: z.string().optional(),
         generationReferenceIds: z.array(z.string()).optional(),
+        viewImages: z
+          .object({
+            front: z.string().optional(),
+            side: z.string().optional(),
+          })
+          .optional(),
         sourceAssetId: z.string().optional(),
         sourceUsage: z.enum(["view", "extract", "variant"]).optional(),
         libraryId: ref.optional(),
@@ -217,12 +230,30 @@ export function plannedMediaItems(
     return [
       ...(data.assets || [])
         .filter((a: any) => a.sourceUsage !== "view")
-        .map((a: any) => ({
-          id: String(a.id),
-          name: String(a.name || a.id),
-          kind: "image",
-          fileId: a.imageId,
-        })),
+        .flatMap((a: any) => {
+          const primary = {
+            id: String(a.id),
+            name: String(a.name || a.id),
+            kind: "image",
+            fileId: a.imageId,
+          };
+          if (a.kind !== "character") return [primary];
+          return [
+            { ...primary, name: `${a.name} 四分之三` },
+            {
+              id: `${a.id}:front`,
+              name: `${a.name} 正面`,
+              kind: "image",
+              fileId: a.viewImages?.front,
+            },
+            {
+              id: `${a.id}:side`,
+              name: `${a.name} 侧面`,
+              kind: "image",
+              fileId: a.viewImages?.side,
+            },
+          ];
+        }),
       ...(data.voices || [])
         .filter((v: any) => v.status !== "not_required" && voiceInBatch(data, v))
         .map((v: any, i: number) => ({
@@ -308,6 +339,33 @@ export function mediaGenerationProgress({
       : `产物 ${done} / ${items.length} 已呈现`;
   return { phase, items, done, total: items.length, current, label };
 }
+
+/**
+ * The provider ran the job and gave a definite answer: it refused the output (content moderation)
+ * or rejected the request. Billing is known, so this is retryable with revised content, unlike an
+ * unknown submission outcome that must never be re-submitted blindly.
+ */
+export class MediaProviderRejection extends Error {
+  readonly code: "content-moderated" | "request-rejected";
+  constructor(code: MediaProviderRejection["code"], message: string) {
+    super(message);
+    this.name = "MediaProviderRejection";
+    this.code = code;
+  }
+}
+export function isContentModerated(error: unknown) {
+  return error instanceof MediaProviderRejection && error.code === "content-moderated";
+}
+/** Classify the provider's own words from a failed native media tool call. */
+export function classifyProviderToolError(text: string): MediaProviderRejection["code"] | "" {
+  if (/content[-_ ]moderat|moderation|safety|unsafe|nsfw|policy violation|blocked/i.test(text))
+    return "content-moderated";
+  if (/HTTP 4\d\d|invalid[_ ]request|bad request/i.test(text)) return "request-rejected";
+  return "";
+}
+/** Wording added to the generation prompt after a moderation refusal; must not change identity, only how the body is rendered. */
+export const moderationSafeRenderNote =
+  "The provider's content moderation refused the previous render of this exact subject. Render the figure fully opaque and fully covered: no bare skin below the neck, no nudity, no exposed anatomy, no wounds or gore; a silhouette or shadow being is one solid lacquer shape, not an unclothed body.";
 
 /** Approval belongs to one exact generated image and its saved prompt. */
 export function isAssetImageLocked(asset: {

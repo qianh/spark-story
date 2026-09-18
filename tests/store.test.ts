@@ -1,6 +1,11 @@
 import { storyFixture, planFixture, approveFixture } from "./fixtures/series";
 import { afterEach, describe, expect, test } from "bun:test";
 import { Store } from "../apps/server/store";
+import {
+  assetVisualPrompt,
+  characterContentTemplate,
+  sharedStyleDna,
+} from "../packages/visual-style";
 import { timingFixture } from "./fixtures/timing";
 import type { Connection } from "../packages/domain";
 const stores: Store[] = [];
@@ -164,7 +169,7 @@ describe("持久任务规则", () => {
     s.setVisualTemplate(p.id, "donghua3d");
     expect(s.visualStyle(p.id).id).toBe("donghua3d");
     expect(s.visualStyle(p.id).prompt).toContain("UNIVERSAL XIANXIA STYLE");
-    expect(s.visualStyle(p.id).prompt).toContain("clear cold immortal aura");
+    expect(s.visualStyle(p.id).prompt).toContain("cold, ethereal, immortal");
     expect(s.visualStyle(p.id).referenceImageId).toBeFalsy();
     const assets = s.one<any>("SELECT * FROM tasks WHERE stage=3")!;
     const rev = assets.revision;
@@ -188,7 +193,7 @@ describe("持久任务规则", () => {
     expect(s.visualStyle(p.id).version).toBe("xianxia-3d-v3");
     s.setVisualTemplate(p.id, "donghua3d");
     expect(s.visualStyle(p.id).prompt).toContain("UNIVERSAL XIANXIA STYLE");
-    expect(s.visualStyle(p.id).version).toBe("xianxia-universal-v3");
+    expect(s.visualStyle(p.id).version).toBe("xianxia-universal-v4");
     expect(s.visualStyle(p.id).characterModule).toContain("character sheet");
     expect(s.task(assets.id).revision).toBe(rev + 1);
     s.db.run("UPDATE project_settings SET data=? WHERE projectId=?", [
@@ -209,12 +214,11 @@ describe("持久任务规则", () => {
       }),
       p.id,
     ]);
-    expect(s.visualStyle(p.id).version).toBe("xianxia-universal-v3");
-    expect(s.visualStyle(p.id).prompt).toContain("clear cold immortal aura");
-    expect(s.visualStyle(p.id).referenceImageId).toBeNull();
-    expect(s.visualStyle(p.id).prompt).not.toContain(
-      "High-finish 3D photorealistic cinematic",
+    expect(s.visualStyle(p.id).version).toBe("xianxia-style-dna-v2");
+    expect(s.visualStyle(p.id).prompt).toBe(
+      "High-finish 3D photorealistic cinematic xianxia production look.",
     );
+    expect(s.visualStyle(p.id).referenceImageId).toBe("old-brown-studio");
     const looks = s.tasks(p.id).find((t) => t.stage === 3)!;
     s.db.run("INSERT INTO media_files VALUES(?,?,?,?,?,?,?,?,?,?)", [
       "kept-style-ref", p.id, looks.id, looks.revision, "image", "仙侠风格参考",
@@ -238,8 +242,19 @@ describe("持久任务规则", () => {
       }),
       p.id,
     ]);
-    expect(s.visualStyle(p.id).version).toBe("xianxia-universal-v3");
+    expect(s.visualStyle(p.id).version).toBe("xianxia-universal-v1");
     expect(s.visualStyle(p.id).referenceImageId).toBe("kept-style-ref");
+    const style = s.visualStyle(p.id);
+    const generated = assetVisualPrompt(style, {
+      kind: "character",
+      promptFormat: "character-content-v1",
+      prompt: characterContentTemplate.replace(/\[[^\]]+\]/g, "none"),
+      identity: "",
+      state: "",
+    });
+    expect(generated).toContain(style.prompt);
+    expect(generated).toContain("High-finish 3D photorealistic cinematic");
+    expect(generated).not.toContain(sharedStyleDna.split("\n")[1]);
   });
   test("重启保留未知费用并使旧执行失效", () => {
     const { s, p, t } = setup();

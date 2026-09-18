@@ -844,14 +844,31 @@ export function BundleView({
       )}
       {bundle.type === "assets" ? (
         <>
-          <p className="muted">全剧共享定妆：先出当前集用到的角色、场景与道具；后集新变体再补。所有集引用同一份已确认版本。</p>
+          <p className="muted">全剧共享定妆：先出当前集用到的角色、场景与道具；后集新变体再补。所有集引用同一份已确认版本。角色同一身份出三张同尺寸全身：四分之三、正面、侧面。</p>
           <p className="muted">{modelReviewEnabled ? `已通过并锁定 ${data.assets.filter(isAssetImageLocked).length} / ${data.assets.length} 张；自动执行只处理未通过图片。` : "模型审核已关闭。请查看图片并自行决定，可单张重新生成或选择已有候选。"}</p>
           <div className="bundle-asset-grid">
             {lookSheetAssets(data.assets).map((asset: any) => {
               const i = data.assets.findIndex((row: any) => row.id === asset.id);
               return (
               <section key={asset.id} className="bundle-card">
-                <MediaPreview id={asset.imageId} files={files} />
+                {asset.kind === "character" ? (
+                  <div className="look-angles">
+                    <figure>
+                      <MediaPreview id={asset.imageId} files={files} />
+                      <figcaption>四分之三</figcaption>
+                    </figure>
+                    <figure>
+                      <MediaPreview id={asset.viewImages?.front} files={files} />
+                      <figcaption>正面</figcaption>
+                    </figure>
+                    <figure>
+                      <MediaPreview id={asset.viewImages?.side} files={files} />
+                      <figcaption>侧面</figcaption>
+                    </figure>
+                  </div>
+                ) : (
+                  <MediaPreview id={asset.imageId} files={files} />
+                )}
                 <h3>
                   {asset.name}
                   <span className="tag">
@@ -886,6 +903,7 @@ export function BundleView({
                             delete d.assets[i].imageId;
                             delete d.assets[i].generationPrompt;
                             delete d.assets[i].generationStyleVersion;
+                            delete d.assets[i].viewImages;
                           })
                         }
                       />

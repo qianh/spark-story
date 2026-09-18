@@ -365,13 +365,38 @@
 }
 .bundle-asset-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 15px;
 }
 .bundle-card {
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 7px;
+}
+.bundle-asset-grid .media-preview.image,
+.bundle-asset-grid .media-placeholder {
+  aspect-ratio: 3 / 4;
+}
+.bundle-asset-grid .media-preview.image img {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: contain;
+}
+.look-angles {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+}
+.look-angles figure {
+  margin: 0;
+  min-width: 0;
+}
+.look-angles figcaption {
+  margin-top: 4px;
+  font-size: 10px;
+  text-align: center;
+  color: var(--muted);
 }
 .bundle-card h3 {
   display: flex;

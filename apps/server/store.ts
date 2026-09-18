@@ -34,7 +34,7 @@ import {
   type Connection,
   type Artifact,
 } from "../../packages/domain";
-import { donghuaStyleVersion, isSeriesMasterLook, visualStyleKey } from "../../packages/visual-style";
+import { isSeriesMasterLook, visualStyleKey } from "../../packages/visual-style";
 
 const id = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
@@ -152,24 +152,6 @@ export class Store {
     const settings = this.settings(projectId);
     const saved = settings.visual;
     const visualRevision = settings.visualRevision || 0;
-    if (
-      saved?.id === "donghua3d" &&
-      /^xianxia-(?:style-dna|universal)-v\d+$/.test(saved.version || "") &&
-      saved.version !== donghuaStyleVersion
-    ) {
-      const keepRef =
-        saved.referenceImageId &&
-        this.one(
-          "SELECT id FROM media_files WHERE id=? AND projectId=? AND kind='image'",
-          saved.referenceImageId,
-          projectId,
-        );
-      return {
-        ...catalogVisualStyle("donghua3d"),
-        referenceImageId: keepRef ? saved.referenceImageId : null,
-        visualRevision,
-      };
-    }
     if (saved?.id && typeof saved.prompt === "string" && saved.prompt)
       return { ...saved, visualRevision };
     return { ...catalogVisualStyle(this.project(projectId).template), visualRevision };
@@ -351,7 +333,7 @@ export class Store {
       const data = bundle.data as Record<string, any>;
       const clean = (item: Record<string, any>) => {
         const copy = { ...item };
-        for (const key of ["imageReview", "imageRepairFeedback", "imageId", "videoId", "sourceAudioId", "libraryId", "baseLibraryId", "candidates", "candidateSpecs", "selectedCandidateId", "generationPrompt", "generationStyleVersion", "generationStyleKey", "generationReferenceIds", "draftImage"])
+        for (const key of ["imageReview", "imageRepairFeedback", "imageId", "videoId", "sourceAudioId", "libraryId", "baseLibraryId", "candidates", "candidateSpecs", "selectedCandidateId", "generationPrompt", "generationStyleVersion", "generationStyleKey", "generationReferenceIds", "viewImages", "draftImage"])
           delete copy[key];
         return copy;
       };

@@ -5,12 +5,19 @@ import { assetPlanSchema } from "../packages/media";
 import { visualStyleKey } from "../packages/visual-style";
 import type { Connection } from "../packages/domain";
 
+function replyPrompt(prompt: string, body: unknown) {
+  if (prompt.startsWith("你是定妆 CONTENT 核对"))
+    return JSON.stringify({ pass: true, feedback: "完整正确", missing: [], wrong: [] });
+  return JSON.stringify(body);
+}
+
 function setup() {
   const store = new Store(":memory:");
   const project = store.createProject({ name: "提示词草稿", source: "仙侠", inputType: "idea", aspect: "16:9", template: "ink", budget: 0 });
   const runtime = new Runtime(store, "/tmp/spark-prompt-tests");
   store.binding = () => ({} as Connection);
-  runtime.call = async () => JSON.stringify({ prompt: "青色玉牌，云纹，细长轮廓", promptFormat: "visual-description-v1" });
+  runtime.call = async (_task, _attempt, _connection, prompt = "") =>
+    replyPrompt(prompt, { prompt: "青色玉牌，云纹，细长轮廓", promptFormat: "visual-description-v1" });
   const task = store.tasks(project.id).find(t => t.stage === 3)!;
   const assets = assetPlanSchema.parse({ summary: "全剧", assets: [
     { id: "a", kind: "prop", name: "玉牌", prompt: "白色玉牌", promptFormat: "visual-description-v1", imageId: "old", generationPrompt: "old compiled", generationStyleKey: visualStyleKey(store.visualStyle(project.id)), candidates: ["old"], candidateSpecs: { old: { prompt: "old compiled", styleKey: visualStyleKey(store.visualStyle(project.id)), styleVersion: "old", referenceIds: [] } } },
@@ -26,8 +33,10 @@ test("single asset prompt regeneration preserves images and other assets; retry 
   try {
     let request = "";
     f.runtime.call = async (_task, _attempt, _connection, prompt) => {
+      if (prompt.startsWith("你是定妆 CONTENT 核对"))
+        return replyPrompt(prompt, {});
       request = prompt;
-      return JSON.stringify({ prompt: "青色玉牌，云纹，细长轮廓", promptFormat: "visual-description-v1" });
+      return replyPrompt(prompt, { prompt: "青色玉牌，云纹，细长轮廓", promptFormat: "visual-description-v1" });
     };
     const updated = await f.runtime.regenerateAssetPrompt(f.task.id, f.task.revision, "a", "改成青色");
     const a = updated.data.assets[0];
@@ -82,7 +91,8 @@ test("reject concurrent regeneration, malformed responses and obsolete drafts", 
     f.runtime.call = async () => JSON.stringify({ prompt: "" });
     await expect(f.runtime.regenerateAssetPrompt(f.task.id, f.task.revision, "a")).rejects.toThrow();
     expect(f.latest()).toEqual(before);
-    f.runtime.call = async () => JSON.stringify({ prompt: "青色玉牌", promptFormat: "visual-description-v1" });
+    f.runtime.call = async (_task, _attempt, _connection, prompt = "") =>
+      replyPrompt(prompt, { prompt: "青色玉牌", promptFormat: "visual-description-v1" });
     await f.runtime.regenerateAssetPrompt(f.task.id, f.task.revision, "a");
     f.store.setVisualTemplate(f.project.id, "cel");
     await expect(f.runtime.retryAsset(f.task.id, f.task.revision, "a")).rejects.toThrow();
@@ -128,7 +138,9 @@ for (const status of ["reviewed", "unreviewed", "approved"] as const) test(`draf
 test("a concurrent edit of the same artifact is not overwritten by a prompt result", async () => {
   const f = setup();
   try {
-    f.runtime.call = async () => {
+    f.runtime.call = async (_task, _attempt, _connection, prompt = "") => {
+      if (prompt.startsWith("你是定妆 CONTENT 核对"))
+        return replyPrompt(prompt, {});
       const edited = f.latest();
       edited.data.summary = "另一个编辑已保存";
       f.store.db.run("UPDATE artifacts SET content=? WHERE taskId=?", [JSON.stringify(edited), f.task.id]);

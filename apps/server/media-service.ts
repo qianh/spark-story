@@ -9,7 +9,11 @@ import { Store } from "./store";
 import { MediaFiles } from "./media-files";
 import { getCredential } from "./credentials";
 import type { Connection } from "../../packages/domain";
-import type { MediaKind, MediaJob } from "../../packages/media";
+import {
+  MediaProviderRejection,
+  type MediaKind,
+  type MediaJob,
+} from "../../packages/media";
 const roleFor: Record<MediaKind, string> = {
   image: "图片模型",
   video: "视频模型",
@@ -317,6 +321,18 @@ export class MediaService {
     } catch (e) {
       const current = this.job(id),
         error = e instanceof Error ? e.message : String(e);
+      if (e instanceof MediaProviderRejection) {
+        // The provider answered definitively; the charge is known and the job may be re-submitted
+        // with revised content instead of being frozen as an unknown billing outcome.
+        this.update(id, { status: "failed", error });
+        if (current.costId)
+          this.store.db.run(
+            "UPDATE costs SET status='provisional' WHERE id=? AND status='reserved'",
+            [current.costId],
+          );
+        this.store.event(job.projectId, job.taskId, "media.rejected", error);
+        throw e;
+      }
       const status =
         c.transport === "cli" && current.status !== "queued"
           ? existsSync(grokResultPath(this.root, job.id)) ||

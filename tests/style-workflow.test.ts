@@ -29,7 +29,13 @@ function setup(
   const stats = { inflight: 0, peak: 0 };
   const pipeline = new MediaPipeline({
     store,
-    call: async (_task: unknown, _attempt: unknown, _connection: unknown, prompt: string) => JSON.stringify(response?.(prompt)),
+    call: async (_task: unknown, _attempt: unknown, _connection: unknown, prompt: string) => {
+      if (prompt.startsWith("你是定妆 CONTENT 核对"))
+        return JSON.stringify({ pass: true, feedback: "完整正确", missing: [], wrong: [] });
+      if (prompt.startsWith("你是定妆 CONTENT 补写"))
+        return JSON.stringify({ prompt: prop().prompt, promptFormat: "prop-content-v1" });
+      return JSON.stringify(response?.(prompt));
+    },
     media: { files: { get: () => ({path:"test-image.png"}) }, connection: () => ({}), ensure: async (_task: string, _revision: number, _kind: string, prompt: string, refs: string[], options: any, _signal?: AbortSignal, _progress?: unknown, force?: boolean) => {
       stats.inflight++;
       stats.peak = Math.max(stats.peak, stats.inflight);
@@ -158,6 +164,8 @@ test("通用仙侠独立生图，不向其他人物和道具传递沈不言", as
   try {
     await f.produce({ type: "assets", data: { summary: "只有道具", assets: [prop()], voices: [] } });
     expect(f.calls[0].refs).toEqual([]);
+    expect(f.calls[0].options.aspect).toBe("3:4");
+    expect(f.calls[0].options.resolution).toBe("2k");
     f.calls.length = 0;
     const girl = {
       ...shenLook(),
@@ -175,9 +183,9 @@ test("通用仙侠独立生图，不向其他人物和道具传递沈不言", as
     expect(f.calls[0].prompt).toContain("Shen Buyan");
     const later = f.calls.slice(1);
     expect(later.every((c) => c.prompt.startsWith("UNIVERSAL XIANXIA STYLE\n"))).toBe(true);
-    expect(later.every((c) => c.prompt.includes("STYLE-NATIVE DESCRIPTION"))).toBe(true);
+    expect(later.every((c) => c.prompt.includes("SERIES LOOK BRIEF"))).toBe(true);
     expect(later.every((c) => !/SAME SERIES STAGE|MODULE —/.test(c.prompt))).toBe(true);
-    expect(later.every((c) => c.refs.length === 0)).toBe(true);
+    expect(later.filter((c) => !/Look angle: (front|side)/.test(c.prompt)).every((c) => c.refs.length === 0)).toBe(true);
     expect(later.every((c) => !c.prompt.includes("REFERENCE ROLES"))).toBe(true);
   } finally {
     f.store.db.close();
@@ -258,9 +266,9 @@ Camera: wide establishing`,
         if (!String(error.message).includes("声音")) throw error;
       });
     expect(f.calls[0].prompt).toContain("Shen Buyan");
-    expect(f.calls).toHaveLength(5);
+    expect(f.calls).toHaveLength(9);
     expect(f.stats.peak).toBe(lookImageConcurrency);
-    expect(f.calls.slice(1).every((c) => c.refs.length === 0)).toBe(true);
+    expect(f.calls.filter((c) => !/Look angle: (front|side)/.test(c.prompt) && !c.prompt.includes("Shen Buyan")).every((c) => c.refs.length === 0)).toBe(true);
   } finally {
     f.store.db.close();
   }
@@ -558,4 +566,58 @@ test("关闭审核后复用旧失败图片，不因审核反馈再次生图", as
     expect(f.calls).toHaveLength(0);
     expect(f.checkpoint().data.assets[0].imageId).toBe(asset.imageId);
   } finally { f.store.db.close(); }
+});
+
+const hallLook = () => ({
+  id: "scene-dadian:default",
+  name: "年轮大殿",
+  kind: "scene" as const,
+  promptFormat: "scene-content-v1" as const,
+  prompt: `CONTENT — SCENE (fill per location):
+Place: indoor axial main hall
+Enclosure: indoor enclosed hall
+Scale: hall deep enough for facing seats
+Time / weather: overcast day
+Near camera: dark timber beams
+Mid: facing seats
+Far: shrine-end root
+Materials: dark timber
+Set dressing: none
+People: none
+Camera: wide indoor hall`,
+  identity: "室内中轴正殿",
+  state: "基础",
+});
+
+test("同一画风下 CONTENT 没变则保留旧图，牌匾改了才重出", async () => {
+  const f = setup("donghua3d");
+  try {
+    f.store.setModelReviewEnabled(f.project.id, false);
+    await f.produce({ type: "assets", data: { summary: "殿", assets: [hallLook()], voices: [] } });
+    expect(f.calls).toHaveLength(1);
+    const kept = f.checkpoint();
+    kept.data.assets[0].generationStyleKey = JSON.stringify([
+      "donghua3d",
+      "xianxia-universal-v4",
+      f.store.visualStyle(f.project.id).prompt,
+      "",
+      "",
+      "",
+      "Monumental flying eaves dougong",
+      "",
+      0,
+    ]);
+    f.calls.length = 0;
+    await f.produce(kept);
+    expect(f.calls).toHaveLength(0);
+    kept.data.assets[0].prompt = hallLook().prompt.replace(
+      "Set dressing: none",
+      "Set dressing: lintel plaque 门楣匾额写「青梧宗」三字",
+    );
+    await f.produce(kept);
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0].prompt).toContain("青梧宗");
+  } finally {
+    f.store.db.close();
+  }
 });

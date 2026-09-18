@@ -59,7 +59,9 @@ test("定妆方案立刻拆成可预览条目，已生成文件计入完成数",
     },
   };
   expect(plannedMediaItems(bundle).map((i) => i.name)).toEqual([
-    "林小雨",
+    "林小雨 四分之三",
+    "林小雨 正面",
+    "林小雨 侧面",
     "雨巷",
     "林小雨 试听",
     "林小雨 试听",
@@ -71,8 +73,8 @@ test("定妆方案立刻拆成可预览条目，已生成文件计入完成数",
   });
   expect(progress.phase).toBe("generating");
   expect(progress.done).toBe(2);
-  expect(progress.total).toBe(4);
-  expect(progress.label).toContain("2 / 4");
+  expect(progress.total).toBe(6);
+  expect(progress.label).toContain("2 / 6");
   expect(progress.current?.status).toBe("polling");
 });
 
@@ -237,6 +239,9 @@ test("部分定妆图已完成时预览直接显示图片，未完成项保留�
   );
   expect(html).toContain("林小雨.png");
   expect(html).toContain('alt="林小雨.png"');
+  expect(html).toContain("四分之三");
+  expect(html).toContain("正面");
+  expect(html).toContain("侧面");
   expect(html).toContain("雨巷");
   expect(html).toContain("等待实际产物");
 });
@@ -621,7 +626,10 @@ test("旧试听没有声音卡时，声音区可单独生成画像，不重做�
 test("全剧其他角色待配音不阻塞当前批次进度，声音卡仍保留展示", () => {
   const bundle = { type: "assets", data: {
     summary: "全剧", voiceBatchAssetIds: ["shen:youth"],
-    assets: [{ id: "shen:youth", name: "沈不言", kind: "character", imageId: "shen-image" }, { id: "su:child", name: "苏晚晴", kind: "character", imageId: "su-image", growthStage: "child" }],
+    assets: [
+      { id: "shen:youth", name: "沈不言", kind: "character", imageId: "shen-image", viewImages: { front: "shen-front", side: "shen-side" } },
+      { id: "su:child", name: "苏晚晴", kind: "character", imageId: "su-image", growthStage: "child", viewImages: { front: "su-front", side: "su-side" } },
+    ],
     voices: [{ character: "沈不言", status: "ready", audioId: "shen-audio" }, { character: "苏晚晴", growthStage: "child", status: "needs_voice" }],
   } };
   expect(mediaGenerationProgress({ bundle, jobs: [], running: false }).phase).toBe("complete");

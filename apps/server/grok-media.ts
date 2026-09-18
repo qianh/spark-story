@@ -3,7 +3,11 @@ import { writeFileSync, existsSync } from "node:fs";
 import { resolve, join, extname } from "node:path";
 import { generate } from "./connectors";
 import type { Connection } from "../../packages/domain";
-import type { MediaJob } from "../../packages/media";
+import {
+  MediaProviderRejection,
+  classifyProviderToolError,
+  type MediaJob,
+} from "../../packages/media";
 
 export function grokResultPath(root: string, id: string) {
   return resolve(root, "runs", "media-cli", id, "output.json");
@@ -64,7 +68,11 @@ export async function runGrokMedia(
         : refs.length
           ? ["image_to_video"]
           : ["image_gen", "image_to_video"];
-    const prompt = `你是媒体工具执行器。直接使用提供的原生媒体工具完成一次交付，不规划多镜头，不调用 shell、网络搜索或其他工具，不重复付费重试。工具报错就报告原始原因，不要换渠道。\n${job.kind === "image" ? (refs.length ? "使用 image_edit，image 数组传入全部参考绝对路径。" : "使用 image_gen。") : refs.length ? "只使用 image_to_video，image 为给定首帧。" : "先用 image_gen 生成一张符合要求的首帧，再用 image_to_video 动画化，不能返回只有图片的结果。"}\n参数：aspect_ratio=${o.aspect || "9:16"}${job.kind === "video" ? `，duration=${o.duration}，resolution_name=${o.resolution || "480p"}` : ""}。单图编辑可能沿用输入比例，不得声称参数一定生效。\n参考图绝对路径：${JSON.stringify(refs)}\n视觉要求：\n${job.prompt}\n完成后返回 JSON {"path":"工具返回的真实绝对路径"}。不能编造文件路径。`;
+    const imageResolution =
+      job.kind === "image" && /^(1k|2k)$/i.test(String(o.resolution || ""))
+        ? String(o.resolution).toLowerCase()
+        : "";
+    const prompt = `你是媒体工具执行器。直接使用提供的原生媒体工具完成一次交付，不规划多镜头，不调用 shell、网络搜索或其他工具，不重复付费重试。工具报错就报告原始原因，不要换渠道。\n${job.kind === "image" ? (refs.length ? "使用 image_edit，image 数组传入全部参考绝对路径。" : "使用 image_gen。") : refs.length ? "只使用 image_to_video，image 为给定首帧。" : "先用 image_gen 生成一张符合要求的首帧，再用 image_to_video 动画化，不能返回只有图片的结果。"}\n参数：aspect_ratio=${o.aspect || "9:16"}${imageResolution ? `，resolution=${imageResolution}` : ""}${job.kind === "video" ? `，duration=${o.duration}，resolution_name=${o.resolution || "480p"}` : ""}。单图编辑必须按给定 aspect_ratio 输出，不得沿用参考图的其他比例。\n参考图绝对路径：${JSON.stringify(refs)}\n视觉要求：\n${job.prompt}\n完成后返回 JSON {"path":"工具返回的真实绝对路径"}。不能编造文件路径。`;
     const executionPrompt = job.kind === "image"
       ? `${prompt}\n生图文本已经编译完成。调用 ${refs.length ? "image_edit" : "image_gen"} 时，prompt 参数必须逐字使用下面 JSON 字符串解码后的文本，不翻译、不润色、不扩写、不删减，不将工具执行说明加入图片提示词：\n${JSON.stringify(job.prompt)}`
       : prompt;
@@ -80,10 +88,17 @@ export async function runGrokMedia(
     );
     const startedTools = new Set<string>();
     let invalidImageRequest = false;
-    await generate(c, executionPrompt, cwd, signal, event, [], () => {}, {
+    let assistantText = "";
+    const toolErrors: string[] = [];
+    await generate(c, executionPrompt, cwd, signal, event, [], (text) => { assistantText = text; }, {
       tools,
       sessionId,
       onProtocol: (message) => {
+        for (const block of message.message?.content || [])
+          if (block.type === "tool_result" && block.is_error) {
+            const content = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
+            toolErrors.push(content.slice(0, 2000));
+          }
         for (const block of message.message?.content || [])
           if (
             block.type === "tool_use" &&
@@ -116,10 +131,28 @@ export async function runGrokMedia(
       },
     });
     if (invalidImageRequest) throw Error("Grok 改写了提示词或遗漏/重排参考图，拒绝接纳此次生成结果");
-    if (!existsSync(cache))
-      throw Error(
-        "Grok CLI 未返回可验证的媒体工具文件；请检查账号媒体权限、工具是否可用及执行记录，不能把文字答复当成图片或视频",
+    if (!existsSync(cache)) {
+      // Keep the provider's own words so a refusal or tool error can be diagnosed later.
+      writeFileSync(
+        join(cwd, "assistant.json"),
+        JSON.stringify({ assistantText, toolErrors }, null, 2),
       );
+      const reason = (toolErrors[0] || assistantText).replace(/\s+/g, " ").trim().slice(0, 400);
+      const rejection = toolErrors.length ? classifyProviderToolError(toolErrors.join("\n")) : "";
+      if (rejection === "content-moderated")
+        throw new MediaProviderRejection(
+          rejection,
+          `供应商内容审核拒绝了本次生成结果，需要修改内容描述后重新生成。供应商原话：${reason}`,
+        );
+      if (rejection)
+        throw new MediaProviderRejection(
+          rejection,
+          `供应商拒绝了本次生成请求。供应商原话：${reason}`,
+        );
+      throw Error(
+        `Grok CLI 未返回可验证的媒体工具文件；请检查账号媒体权限、工具是否可用及执行记录，不能把文字答复当成图片或视频${reason ? `。供应商原话：${reason}` : ""}`,
+      );
+    }
   } else event("恢复已完成的 CLI 媒体文件，不重新提交生成");
   const { path } = JSON.parse(await readFile(cache, "utf8"));
   if (typeof path !== "string" || !accepted(path))

@@ -386,7 +386,7 @@ export class Runtime {
           task.revision,
           message.includes("预算")
             ? "budget_blocked"
-            : /制作容量验收|制作验收/.test(message)
+            : /制作容量验收|制作验收|内容需按模板|定妆 brief|CONTENT 核对/.test(message)
               ? "needs_user"
               : "provider_blocked",
           message,

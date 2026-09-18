@@ -3,13 +3,18 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "os";
 import {
+  assetPromptRevisionPrompt,
+  assetRevisionContext,
+  directorPrompt,
+  lookFactsFromContext,
   mergeStoryRevision,
+  seriesLookFactsPrompt,
   storyRevisionContext,
 } from "../apps/server/director";
 import { Runtime } from "../apps/server/runtime";
 import { Store } from "../apps/server/store";
 import { readStoredPlan } from "../packages/change-plan";
-import { visualStyleKey } from "../packages/visual-style";
+import { lookContentIssues, visualStyleKey } from "../packages/visual-style";
 import type { Connection } from "../packages/domain";
 import { approveFixture, scriptFixture } from "./fixtures/series";
 
@@ -293,6 +298,8 @@ test("确认后从故事设定改到定妆重出，保留无关角色", async ()
         identity: "男童药童，圆脸",
         state: "粗布短打",
       });
+    if (prompt.startsWith("你是定妆 CONTENT 核对"))
+      return JSON.stringify({ pass: true, feedback: "完整正确", missing: [], wrong: [] });
     throw Error(prompt.slice(0, 40));
   });
   r.intervene(looks.id, looks.revision, "药童改成男童");
@@ -402,4 +409,237 @@ test("故事修订只带目标章，补丁写回后其它章不动", () => {
   expect(next.chapters[0].content).toContain("年轮大殿");
   expect(next.chapters[1].content).toContain("大型白石高台");
   expect(next.lookRegistry?.entities[0].variants[0].form).toContain("可容人立");
+});
+
+test("完整故事稿若漏掉外观登记，合并时用当前稿或兜底登记补回", () => {
+  const story = {
+    type: "story" as const,
+    bible: "青梧宗。",
+    chapters: [
+      {
+        id: "CH001",
+        title: "入宗",
+        content: "沈不言抱着她走进年轮大殿，放到厚毡上。药香、剑油和阵墨混进从殿外渗入的湿雾。掌门远看着本根，没有催。".repeat(2),
+        continuity: "入宗",
+        beats: [{ id: "CH001-B001", eventId: "E001", description: "入宗" }],
+      },
+    ],
+    lookRegistry: {
+      type: "look-registry" as const,
+      entities: [
+        {
+          id: "scene-dadian",
+          name: "年轮大殿",
+          kind: "scene" as const,
+          variants: [
+            {
+              id: "default",
+              name: "年轮大殿",
+              kind: "form" as const,
+              identity: "青梧宗正殿",
+              form: "室内中轴，尽头本根",
+              source: "CH001",
+            },
+          ],
+        },
+      ],
+    },
+  };
+  const dropped = mergeStoryRevision(story, {
+    type: "story",
+    bible: story.bible,
+    chapters: story.chapters,
+  });
+  expect(dropped.lookRegistry?.entities[0].id).toBe("scene-dadian");
+  const orphan = { ...story, lookRegistry: undefined };
+  const fromFallback = mergeStoryRevision(
+    orphan,
+    {
+      lookEntities: [
+        {
+          ...story.lookRegistry.entities[0],
+          variants: [
+            {
+              ...story.lookRegistry.entities[0].variants[0],
+              form: "室内中轴正殿，两侧议事席，尽头本根神位",
+            },
+          ],
+        },
+      ],
+    },
+    story.lookRegistry,
+  );
+  expect(fromFallback.lookRegistry?.entities[0].variants[0].form).toContain(
+    "本根神位",
+  );
+});
+
+test("宗门山门牌匾默认写宗名，主控不必再问", () => {
+  expect(directorPrompt({}, "山门上的文字不对")).toContain(
+    "宗门山门牌匾默认写该宗之名",
+  );
+  expect(seriesLookFactsPrompt()).toContain("宗门山门牌匾写该宗之名");
+  expect(seriesLookFactsPrompt()).toContain("空眼写贴面空板");
+  expect(seriesLookFactsPrompt()).toContain("禁止写 mask");
+});
+
+test("定妆从整部故事筛相关章节，写全剧可复用形制", () => {
+  const story = {
+    type: "story" as const,
+    bible: "青梧宗年轮大殿是正殿。盟会另有问道台。",
+    chapters: [
+      {
+        id: "CH001",
+        title: "议事",
+        content:
+          "年轮大殿是室内中轴正殿，暗木梁架，尽头本根如神位。今日办喜事，梁上挂着红灯笼。",
+        continuity: "议事",
+        beats: [{ id: "CH001-B001", eventId: "E001", description: "议事" }],
+      },
+      {
+        id: "CH002",
+        title: "山路",
+        content: "沈不言走在山路上，未回宗门。",
+        continuity: "山路",
+        beats: [{ id: "CH002-B001", eventId: "E002", description: "山路" }],
+      },
+      {
+        id: "CH003",
+        title: "守灵",
+        content: "众人回到年轮大殿办丧事，梁上换了白布。本根仍在尽头。",
+        continuity: "守灵",
+        beats: [{ id: "CH003-B001", eventId: "E003", description: "守灵" }],
+      },
+      {
+        id: "CH006",
+        title: "问道",
+        content:
+          "问道台在盟会云脊正道坪中央。台高过人头，石阶可上。台面宽，纹是正年轮，年轮中心空着像待填的眼。",
+        continuity: "问道",
+        beats: [{ id: "CH006-B001", eventId: "E006", description: "问道" }],
+      },
+    ],
+    lookRegistry: {
+      type: "look-registry" as const,
+      entities: [
+        {
+          id: "scene-dadian",
+          name: "年轮大殿",
+          kind: "scene" as const,
+          variants: [
+            {
+              id: "default",
+              name: "年轮大殿",
+              kind: "form" as const,
+              identity: "青梧宗室内中轴正殿",
+              form: "暗木梁架，尽头本根神位",
+              source: "CH001",
+            },
+          ],
+        },
+      ],
+    },
+  };
+  const ctx = assetRevisionContext(story, story.lookRegistry, {
+    id: "scene-dadian:default",
+    name: "年轮大殿",
+    identity: "年轮大殿",
+  });
+  expect(ctx.bible).toContain("年轮大殿是正殿");
+  expect(ctx.chapters.map((chapter) => chapter.id)).toEqual(["CH001", "CH003"]);
+  expect(ctx.chapters.some((chapter) => chapter.excerpt.includes("本根"))).toBe(
+    true,
+  );
+  const prompt = assetPromptRevisionPrompt(
+    {
+      id: "scene-dadian:default",
+      name: "年轮大殿",
+      kind: "scene",
+      prompt: "Place: courtyard",
+      promptFormat: "scene-content-v1",
+      identity: "年轮大殿",
+      state: "院子",
+    },
+    "年轮大殿按故事重出",
+    ctx,
+  );
+  expect(prompt).toContain("整部剧共用的参考图");
+  expect(prompt).toContain("这一条资产单独");
+  expect(prompt).toContain("相关章节");
+  expect(prompt).toContain("红灯笼");
+  expect(prompt).toContain("白布");
+  expect(prompt).toContain("某一集的布置");
+});
+
+test("章节写到空眼时，苏晚晴的机械核对仍只看本条登记", () => {
+  const story = {
+    type: "story" as const,
+    bible: "苏晚晴幼女入宗。噬相殿主戴空眼面具。",
+    chapters: [
+      {
+        id: "CH001",
+        title: "入宗",
+        content:
+          "苏晚晴看见空眼殿主的空眼面具，空孔如两口枯井。她眼睛很黑很浅，瞳中无纹，眉心有极淡金叶。".repeat(
+            2,
+          ),
+        continuity: "入宗",
+        beats: [{ id: "CH001-B001", eventId: "E001", description: "入宗" }],
+      },
+    ],
+    lookRegistry: {
+      type: "look-registry" as const,
+      entities: [
+        {
+          id: "su-wanqing",
+          name: "苏晚晴",
+          kind: "character" as const,
+          variants: [
+            {
+              id: "child",
+              name: "初相·稚梧（幼女）",
+              kind: "growth" as const,
+              identity:
+                "苏晚晴。幼女身量，抱起来不沉。眼睛很黑很浅，发丝无光泽，瞳中无纹。眉心有极淡金叶印记。",
+              form: "素衣旧布，弱光贴在眉心。初相·稚梧的入宗形制。领口可洗至发白。",
+              source: "CH001",
+            },
+          ],
+        },
+      ],
+    },
+  };
+  const asset = {
+    id: "su-wanqing:child",
+    name: "初相·稚梧（幼女）",
+    kind: "character",
+    prompt: `CONTENT — CHARACTER (fill per role):
+
+Subject: child Chinese girl xianxia Qingwu foundling, young-girl stature light enough to be carried.
+
+Face: pale, very dark shallow eyes, pupils empty of year-ring grain, unique marks: a very faint gold-leaf print on the forehead.
+
+Hair: dark, dull, worn loose, hairpiece: none.
+
+Costume:
+- Inner robe: faded plain coarse cloth
+- Outer robe: matching worn plain cloth
+- Overlay: none
+- Embroidery: none
+- Waist: plain cloth sash
+- Other accessories: none
+- Shoes: dark rounded-toe cloth boots
+
+Pose: standing upright.
+Only this one person in frame.`,
+    identity:
+      "苏晚晴。幼女身量，抱起来不沉。眼睛很黑很浅，发丝无光泽，瞳中无纹。眉心有极淡金叶印记。",
+    state: "素衣旧布，弱光贴在眉心。",
+  };
+  const facts = lookFactsFromContext(
+    asset,
+    assetRevisionContext(story, story.lookRegistry, asset),
+  );
+  expect(facts.excerpts).toContain("空眼");
+  expect(lookContentIssues(asset.kind, asset.prompt, facts)).toEqual([]);
 });

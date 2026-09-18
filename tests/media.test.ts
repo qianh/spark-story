@@ -10,9 +10,23 @@ import { Runtime } from "../apps/server/runtime";
 import { MediaService } from "../apps/server/media-service";
 import { MediaFiles, command } from "../apps/server/media-files";
 import { loadCredentials, saveCredential } from "../apps/server/credentials";
-import { timelineSchema, type MediaJob } from "../packages/media";
+import {
+  timelineSchema,
+  MediaProviderRejection,
+  classifyProviderToolError,
+  isContentModerated,
+  type MediaJob,
+} from "../packages/media";
 import { timingFixture } from "./fixtures/timing";
 import type { Connection, Task, Artifact } from "../packages/domain";
+function passContentReview(prompt: string, otherwise: unknown) {
+  if (prompt.startsWith("你是定妆 CONTENT 核对"))
+    return JSON.stringify({ pass: true, feedback: "完整正确", missing: [], wrong: [] });
+  if (prompt.startsWith("你是定妆 CONTENT 补写"))
+    return JSON.stringify({ prompt: "补写后的定妆", promptFormat: "visual-description-v1" });
+  return typeof otherwise === "string" ? otherwise : JSON.stringify(otherwise);
+}
+
 const resources: {
   root: string;
   store: Store;
@@ -162,6 +176,41 @@ test("重启保留媒体检查点和未知提交，防止重发", async () => {
   expect(media.create(t.id, 2, "image", "待下载定妆", [], {}).id).toBe(job.id);
   await expect(media.run(job.id)).rejects.toThrow("未知");
   expect(f.counts().submissions).toBe(0);
+});
+test("供应商内容审核拒绝是明确结果：任务标记 failed 可重提，不冻结为未知账单", async () => {
+  const f = await fixture(),
+    media = new MediaService(f.store, f.root),
+    t = f.store.one<Task>("SELECT * FROM tasks WHERE stage=3")!;
+  const job = media.create(t.id, 1, "image", "取相残使暗影", [], {});
+  (media as any).submit = async () => {
+    throw new MediaProviderRejection(
+      "content-moderated",
+      "供应商内容审核拒绝了本次生成结果。供应商原话：imagine:content-moderated",
+    );
+  };
+  await expect(media.run(job.id)).rejects.toThrow("内容审核");
+  expect(media.job(job.id).status).toBe("failed");
+  expect(media.job(job.id).error).toContain("content-moderated");
+  // 同一提示词可以再建新任务，而不是命中“结果未知”守卫。
+  expect(media.create(t.id, 1, "image", "取相残使暗影", [], {}).id).not.toBe(job.id);
+  expect(
+    f.store.list<{ type: string }>("SELECT type FROM events WHERE taskId=?", t.id)
+      .some((e) => e.type === "media.rejected"),
+  ).toBe(true);
+});
+test("Grok 工具报错按供应商原话分类：审核拒绝与请求被拒都可重试，其余仍是未知", () => {
+  expect(
+    classifyProviderToolError(
+      '{"error":"tool_execution_failed","message":"Image edit failed with HTTP 400 Bad Request: {\\"code\\":\\"imagine:content-moderated\\",\\"error\\":\\"Generated image rejected by content moderation.\\"}"}',
+    ),
+  ).toBe("content-moderated");
+  expect(classifyProviderToolError("Image edit failed with HTTP 400 Bad Request: invalid aspect_ratio")).toBe(
+    "request-rejected",
+  );
+  expect(classifyProviderToolError("connection reset by peer")).toBe("");
+  expect(isContentModerated(new MediaProviderRejection("content-moderated", "x"))).toBe(true);
+  expect(isContentModerated(new MediaProviderRejection("request-rejected", "x"))).toBe(false);
+  expect(isContentModerated(Error("x"))).toBe(false);
 });
 test("图像真实保存、视频异步查询、完成结果复用不重复收费", async () => {
   const f = await fixture(),
@@ -684,18 +733,21 @@ test("定妆方案解析后立刻写入预览检查点，不等待第一张图",
       _c: Connection,
       prompt: string,
     ) =>
-      prompt.includes("配音")
-        ? JSON.stringify({
-            voices: [{ character: "主角", voice: "alloy", sampleText: "你好" }],
-          })
-        : JSON.stringify({
-            summary: "定妆",
-            assets: [
-              { id: "hero", name: "主角", kind: "character", prompt: "主角" },
-              { id: "alley", name: "雨巷", kind: "scene", prompt: "雨巷" },
-            ],
-            voices: [],
-          }),
+      passContentReview(
+        prompt,
+        prompt.includes("配音")
+          ? {
+              voices: [{ character: "主角", voice: "alloy", sampleText: "你好" }],
+            }
+          : {
+              summary: "定妆",
+              assets: [
+                { id: "hero", name: "主角", kind: "character", prompt: "主角" },
+                { id: "alley", name: "雨巷", kind: "scene", prompt: "雨巷" },
+              ],
+              voices: [],
+            },
+      ),
     media: {
       connection: () => f.c,
       ensure: async (_id: string, _revision: number, kind: string) => {
@@ -729,9 +781,18 @@ test("定妆方案解析后立刻写入预览检查点，不等待第一张图",
   expect(checkpoints[0].data.assets.every((a: any) => !a.imageId)).toBe(true);
   expect("assets" in result.data).toBe(true);
   expect(
-    "assets" in result.data && result.data.assets.map((a) => a.imageId),
-  ).toEqual(["img-1", "img-2"]);
-  expect(images).toBe(2);
+    "assets" in result.data && result.data.assets.every((a) => a.imageId),
+  ).toBe(true);
+  expect(
+    "assets" in result.data && new Set(result.data.assets.map((a) => a.imageId)).size,
+  ).toBe(2);
+  expect(
+    "assets" in result.data && result.data.assets[0].viewImages?.front,
+  ).toBeTruthy();
+  expect(
+    "assets" in result.data && result.data.assets[0].viewImages?.side,
+  ).toBeTruthy();
+  expect(images).toBe(4);
 });
 
 test("定妆不使用额外天气禁词拦截，提交实际提示词生图", async () => {
@@ -740,8 +801,8 @@ test("定妆不使用额外天气禁词拦截，提交实际提示词生图", as
   const task = f.store.tasks(f.project.id).find((t) => t.stage === 3)!;
   const pipeline = new MediaPipeline({
     store: f.store,
-    call: async () =>
-      JSON.stringify({
+    call: async (_task: Task, _attempt: string, _c: Connection, prompt = "") =>
+      passContentReview(prompt, {
         summary: "定妆",
         assets: [
           {
@@ -786,8 +847,8 @@ test("语音连接缺失时先保存定妆图，补齐连接后复用图片继�
   let saved: any;
   const pipeline = new MediaPipeline({
     store: f.store,
-    call: async () =>
-      JSON.stringify({
+    call: async (_task: Task, _attempt: string, _c: Connection, prompt = "") =>
+      passContentReview(prompt, {
         voices: [{ character: "主角", voice: "alloy", sampleText: "你好" }],
       }),
     media: {
@@ -829,14 +890,18 @@ test("语音连接缺失时先保存定妆图，补齐连接后复用图片继�
     );
   await expect(run(plan)).rejects.toThrow("定妆图片已生成并保存");
   expect(saved.data.assets[0].imageId).toBe("saved-image");
-  expect(images).toBe(1);
+  expect(saved.data.assets[0].viewImages).toEqual({
+    front: "saved-image",
+    side: "saved-image",
+  });
+  expect(images).toBe(3);
   expect(speech).toBe(0);
   voiceReady = true;
   const result = await run(saved);
   expect("voices" in result.data && result.data.voices[0].audioId).toBe(
     "saved-audio",
   );
-  expect(images).toBe(1);
+  expect(images).toBe(3);
   expect(speech).toBe(1);
 });
 
@@ -958,6 +1023,8 @@ test("Qwen 定妆写声音卡并用长句试听，跨集复用，再听一条不
     store: f.store,
     active: new Map(),
     call: async (_t: Task, _a: string, _c: Connection, prompt: string) => {
+      if (prompt.startsWith("你是定妆 CONTENT 核对") || prompt.startsWith("你是定妆 CONTENT 补写"))
+        return passContentReview(prompt, {});
       prompts.push(prompt);
       return JSON.stringify({ voicePortrait: portrait, sampleText: audition });
     },
