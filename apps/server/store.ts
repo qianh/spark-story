@@ -276,7 +276,9 @@ export class Store {
     return this.db.transaction(() => {
       const prev = this.settings(projectId).visual || {};
       const sameId = prev.id === style.id;
-      const next = sameId ? { ...style, referenceImageId: prev.referenceImageId } : style;
+      const next = sameId
+        ? { ...style, referenceImageId: prev.referenceImageId, hallScaleImageId: prev.hallScaleImageId }
+        : { ...style, hallScaleImageId: prev.hallScaleImageId };
       // Compare the definition; the generation revision advances only after a real change.
       if (visualStyleKey({ ...prev, visualRevision: 0 }) === visualStyleKey({ ...next, visualRevision: 0 })) {
         this.patchSettings(projectId, { visual: { ...style, referenceImageId: prev.referenceImageId } });

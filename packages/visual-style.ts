@@ -1,27 +1,39 @@
-export const donghuaStyleVersion = "xianxia-universal-v4";
+export const donghuaStyleVersion = "xianxia-universal-v9";
 
-// The style is a feeling, written from the approved reference key art, not a checklist of garments.
-// Identity (face, age, hair color, robe colors, ornament level, marks) comes from each asset's content.
+/** Rendering language only. Color grade is LOOK; robes, weather, fog and place are SUBJECT. */
 const xianxiaFeelHead = `UNIVERSAL XIANXIA STYLE
-Semi-realistic 3D CG Chinese xianxia key art from one same series — the finish of a high-end cultivation donghua or immortal-game promotional still.
-Feel: cold, ethereal, immortal and quiet. Painterly-real render with soft edges and fine surface detail; never plastic toy 3D, never Pixar, never flat anime cel, never live-action photo, never chibi.
-Grading: cool desaturated grey-silver-blue tonal world with restrained accent colors; specified local colors stay as given, read inside this grading.
-Air and place: heavy atmospheric haze; mist-wrapped jagged peaks, pines and distant pavilion roofs dissolving into overcast cloud behind every subject; never a bare studio backdrop, never a flat product-shot void.
-Light: soft overcast daylight from above, gentle wraparound fill, faint cool rim on edges; no hard studio key.`;
+[STYLE] cinematic 3D CGI still, Unreal Engine quality, hyper-detailed PBR materials, idealized realistic human, sharp elegant bone structure, filmic sculpted lighting, crisp micro-detail on fabric embroidery wood and metal, shallow cinematic depth, masterpiece still frame, not anime, not painterly 2D, not illustration brushwork
+Color, weather, fog, incense and costume palette are not this style; they come from LOOK and SUBJECT.
+Same rendering language for characters, props, and sets.`;
 
 export const sharedStyleDna = `${xianxiaFeelHead}
-Faces: refined manhua-immortal features — elongated face, clean sharp jaw, narrow straight nose, long brows, calm cold gaze, porcelain-smooth skin with soft subsurface glow. Each character keeps its own specified age, gender, build, species, face, marks and expression; different characters must not share one face.
-Hair and fabric: individually stranded long hair and layered robe hems lifted by mountain wind even when standing still.
-Costume feel: layered traditional Chinese xianxia tailoring. Fine embroidery, jade and silver ornament are this world's natural richness, worn at the level each character's content sets — ornate stays ornate, plain cloth stays plain, and plain cloth still reads as this same xianxia world. Never a modern coat, jacket or uniform.
-Materials: silk sheen, visible weave, translucent jade, brushed silver, carved wood, wet stone; movie-grade response.
-Same visual family for characters, props, and sets.`;
+Each character keeps its own age, gender, build, species, face, marks and expression; different characters must not share one face.
+Ornament follows the character — ornate stays ornate, plain cloth stays plain. Never a modern coat, jacket or uniform.`;
 
 export const xianxiaWorldDna = `${xianxiaFeelHead}
-Materials: carved dark wood, grey tile, bronze, translucent jade, silk cloth, wet stone; movie-grade response.
-Same visual family for characters, props, and sets.
 Occupancy: empty of figures. Draw no people, cultivators, hands, faces, silhouettes, mannequins or human shadows.`;
 
+export const catalogLookGrades = {
+  "cold-silver": "[LOOK] cold silver grade, desaturated teal-black, restrained saturation",
+  "warm-jade": "[LOOK] warm jade and amber grade, candle key light",
+  "warm-cinnabar": "[LOOK] warm cinnabar and antique gold grade",
+  "ink-blue": "[LOOK] ink-blue night grade, moonlight rim",
+} as const;
+
+export type CatalogLookGrade = keyof typeof catalogLookGrades;
+
+export function lookGradeBlock(style: { lookGrade?: string | null }) {
+  const id = style.lookGrade;
+  if (!id) return "";
+  if (id in catalogLookGrades) return catalogLookGrades[id as CatalogLookGrade];
+  return `[LOOK] ${id}`;
+}
+
+/** @deprecated Indoor light and roof belong to the scene's own content, not a second style. */
+export const xianxiaIndoorWorldDna = xianxiaWorldDna;
+
 export const lookSheetAspect = "3:4";
+export const hallLookSheetAspect = "16:9";
 export const lookSheetResolution = "2k";
 export const characterLookAngles = ["three-quarter", "front", "side"] as const;
 export type CharacterLookAngle = (typeof characterLookAngles)[number];
@@ -30,18 +42,28 @@ export function lookSheetOptions(
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> & { aspect: string; resolution: string } {
   return {
-    ...extra,
     aspect: lookSheetAspect,
     resolution: lookSheetResolution,
+    ...extra,
   };
+}
+
+export function assetLookSheetOptions(
+  asset: { id?: string; name?: string; kind?: string },
+  extra: Record<string, unknown> = {},
+) {
+  return lookSheetOptions({
+    ...extra,
+    ...(isHallLookAsset(asset) ? { aspect: hallLookSheetAspect } : {}),
+  });
 }
 
 export function characterLookAngleLine(angle: CharacterLookAngle = "three-quarter") {
   if (angle === "front")
-    return "Look angle: front. Composition: full-body front view, camera on the chest line, both ears visible, feet planted, same standing pose.";
+    return "Look angle: isolated front. One full-body figure only. Orthographic front, camera on the chest line, both ears visible, feet planted. Not a profile, not a three-quarter, not multiple figures.";
   if (angle === "side")
-    return "Look angle: side. Composition: full-body left-side profile, nose-to-ear silhouette, feet planted, same standing pose.";
-  return "Look angle: three-quarter. Composition: full-body three-quarter standing, feet visible.";
+    return "Look angle: isolated left profile. One full-body figure only. Strict 90-degree side, nose-to-ear silhouette, only one eye, feet planted. Not a front view, not a three-quarter, not multiple figures.";
+  return "Look angle: three-quarter. One full-body figure only. Camera on the front-left, both eyes visible, feet planted. Not a front view, not a profile, not multiple figures in one frame.";
 }
 
 export function characterLookViewsComplete(asset: {
@@ -53,13 +75,31 @@ export function characterLookViewsComplete(asset: {
   return !!(asset.imageId && asset.viewImages?.front && asset.viewImages?.side);
 }
 
-export const characterSheetModule = `ASSET: series character sheet in the same key-art finish. Full-body standing, three-quarter, feet visible, the figure sharp against softly blurred mist and distant peaks in the series grading. One person.`;
+export const characterSheetModule = `ASSET: series character sheet in this rendering language. One person, one full-body three-quarter view. Same pose, same clothes, feet visible. Empty ground, no location. Same [STYLE] rendering language.`;
 
-export const creatureSheetModule = `ASSET: series creature sheet in the same key-art finish. One living bird in full, sharp against softly blurred mist and distant peaks. Feathered body, talons visible. No garments.`;
+export const characterFrontSheetModule = `ASSET: isolated front plate of the same character. One full-body figure, orthographic front. Empty ground. Same cinematic 3D CGI rendering language.`;
 
-export const propSheetModule = `ASSET: series hero prop in the same key-art finish. One reusable object, three-quarter, set on wet dark stone with soft mist and distant peaks blurred behind. Same material response as the series costumes.`;
+export const characterSideSheetModule = `ASSET: isolated left-profile plate of the same character. One full-body figure, strict 90-degree side. Empty ground. Same cinematic 3D CGI rendering language.`;
 
-export const sceneSheetModule = `ASSET: series set plate in the same key-art finish. Follow the scene content for enclosure and architecture: indoor halls stay roofed and enclosed; outdoor terraces and platforms stay open and do not grow palace wings, bracket sets or enclosed courts unless the content asks for them. Designed mist and cloud-wrapped peaks, empty set. No people.`;
+export function characterSheetForAngle(angle: CharacterLookAngle = "three-quarter") {
+  if (angle === "front") return characterFrontSheetModule;
+  if (angle === "side") return characterSideSheetModule;
+  return characterSheetModule;
+}
+
+export const creatureSheetModule = `ASSET: series creature sheet in this painter's hand. One living bird in full. Feathered body, talons visible. No garments. Empty ground; this sheet is not a location.`;
+
+export const propSheetModule = `ASSET: series hero prop in this painter's hand. One reusable object, three-quarter. Empty ground; this sheet is not a location.`;
+
+export const sceneSheetModule = `ASSET: series set plate in this painter's hand. Follow this scene's own enclosure and architecture. Empty set. No people.`;
+
+export const indoorSceneSheetModule = `ASSET: series indoor set plate. Same rendering language as the sect main hall: hyper-detailed PBR dark lacquered timber, filmic sculpted lantern light. Camera inside a roofed room: continuous boarded timber ceiling, four walls. Empty set. No people.`;
+
+export const indoorHallSheetModule = `ASSET: series indoor 宗门主殿 plate. This is a palatial worship-and-audience hall (殿), not a meeting room, not a meditation hall, not a village 祠堂. Dark lacquered 金柱 thicker than a person, ornate coffered boarded timber ceiling, empty ceremonial nave, raised shrine dais as the climax. Enclosed: four blind walls, continuous boarded roof. Empty set. No people.`;
+
+/** Inverted ding must still read as a three-legged Chinese furnace, not a vase or leaf. */
+export const invertedFurnaceFormLine =
+  "a Chinese ritual ding-furnace with a round cauldron belly, two loop handles on the rim and three legs, standing inverted so the mouth opening faces the ground and the three legs point up; scorched-gold bronze pieced with broken-mirror shards and inverted year-ring carving. It must read as this ding-furnace";
 
 /** Catalog `prompt` is the shared DNA. Character STYLE LOCK is now DNA + character module. */
 export const donghuaStylePrompt = sharedStyleDna;
@@ -67,7 +107,7 @@ export const donghuaStylePrompt = sharedStyleDna;
 export const xianxiaProductionPrompt = sharedStyleDna;
 
 export const characterStyleClosing =
-  "Consistent 仙侠国漫 series look, same donghua lighting, same costume material language, same studio family.";
+  "Same cinematic 3D CGI rendering language for the series. Color, weather and fog follow LOOK and SUBJECT.";
 
 export const characterContentTemplate = `CONTENT — CHARACTER (fill per role):
 
@@ -224,17 +264,21 @@ function compilePortraitField(text: string | undefined) {
 /** One line that carries the selected feel into the body of the brief, next to the identity facts. */
 export function lookStyleFeelLine(
   kind: "character" | "creature" | "shadow" | "prop" | "scene",
-  options: { emptyEye?: boolean } = {},
+  options: { emptyEye?: boolean; indoor?: boolean; hall?: boolean } = {},
 ) {
   if (kind === "character")
-    return `Style feel: same series as every other sheet — semi-realistic 3D CG xianxia key art, ${options.emptyEye ? "the blank plate sits where the face would be, same skin and hair finish as the series" : "manhua-immortal face"}, cold ethereal air, hair and robe edges lifted by mountain wind, mist and distant peaks softly blurred behind; plain cloth still reads as this xianxia world. The facts above set identity only; do not change medium, anatomy, materials, lighting or grading.`;
+    return `Style feel: the same painter as every other sheet — cinematic 3D CGI still, ${options.emptyEye ? "blank plate where the face would be, same skin and hair finish" : "idealized realistic face"}, filmic sculpted light. Color, weather and fog come from LOOK and SUBJECT.`;
   if (kind === "creature")
-    return "Style feel: same series as every other sheet — semi-realistic 3D CG xianxia key art, cold ethereal air, feathers lifted by mountain wind, mist and distant peaks softly blurred behind. Do not change medium, anatomy, materials, lighting or grading.";
+    return "Style feel: the same painter as every other sheet — cinematic 3D CGI still, filmic sculpted light, feathers with PBR barb detail.";
   if (kind === "shadow")
-    return "Style feel: same series as every other sheet — semi-realistic 3D CG xianxia key art, cold ethereal air, the silhouette edges smoked by mountain wind, mist and distant peaks softly blurred behind. Do not change medium, anatomy, materials, lighting or grading.";
+    return "Style feel: the same painter as every other sheet — cinematic 3D CGI still, idealized realistic proportions. The scorched-gold and bone-lacquer face is this character's identity.";
   if (kind === "prop")
-    return "Style feel: same series as every other sheet — semi-realistic 3D CG xianxia key art, cool grey-silver grading, soft overcast light, mist and distant peaks softly blurred behind the object. Do not change medium, materials, lighting or grading.";
-  return "Style feel: same series as every other plate — semi-realistic 3D CG xianxia key art, cool grey-silver grading, heavy haze, mist-wrapped peaks under overcast cloud, soft overcast light. Do not change medium, materials, lighting or grading.";
+    return "Style feel: the same painter as every other sheet — cinematic 3D CGI still, hyper-detailed PBR. Color grade comes from LOOK and SUBJECT.";
+  if (options.hall)
+    return "Style feel: the same painter as every other plate — cinematic 3D CGI still, filmic sculpted light. This SUBJECT is architecture: keep deep axial space, tack-sharp from the near 金柱 to the raised shrine-canopy. Do not collapse it into a shallow room even if the style mentions shallow depth.";
+  if (options.indoor)
+    return "Style feel: the same painter as every other plate — cinematic 3D CGI still, hyper-detailed PBR dark lacquered timber, filmic sculpted lantern light. Same rendering language as the sect main hall. This SUBJECT is a human-scale enclosed medicine room.";
+  return "Style feel: the same painter as every other plate — cinematic 3D CGI still, filmic sculpted light. Weather, fog and grade follow LOOK and SUBJECT.";
 }
 
 /**
@@ -242,7 +286,7 @@ export function lookStyleFeelLine(
  * human outline makes the model draw bare skin, which the provider's moderation then refuses.
  */
 export const shadowBodyLine =
-  "Body: one solid, fully opaque silhouette of scorched-gold mixed with withered-bone lacquer, shaped like a standing person from head to feet. The whole figure is a single dense lacquer shape with washed-away features; no skin, no anatomy, no separate robe or boots are visible because the shadow itself is the surface. Read as a shadow being, not as a bare body.";
+  "Body: young-adult cultivator body under a full-length xianxia robe; scorched-gold mixed with withered-bone lacquer is the skin and cloth color, not a statue or a cut-out silhouette.";
 
 function lookCompileLocks(kind: string, content: string) {
   const f = contentFields(content);
@@ -264,7 +308,7 @@ function lookCompileLocks(kind: string, content: string) {
       fieldAffirms(f["Unique marks"], /inverted|倒置|鼎口朝下|mouth downward/))
   )
     locks.push(
-      "Orientation form: the ding stands upside down, mouth opening faces the ground.",
+      "Orientation form: the ding-furnace stands upside down, mouth opening faces the ground, three legs point up.",
     );
   if (
     (fieldAffirms(f.Item, /ruler|铁尺/) || fieldAffirms(f.Form, /ruler|铁尺/) ||
@@ -274,8 +318,23 @@ function lookCompileLocks(kind: string, content: string) {
       fieldAffirms(f.Form, /year-ring|年轮/))
   )
     locks.push("Scale form: a dark iron bar; the face shows inverted year-rings.");
-  if (fieldAffirms(enclosure, /indoor|enclosed hall|正殿|室内/) ||
-    fieldAffirms(f.Place, /indoor enclosed|室内中轴|室内正殿|室内封闭/))
+  if (fieldAffirms(f.Place, /indoor axial|室内中轴|室内正殿/) ||
+    (fieldAffirms(enclosure, /indoor enclosed hall|enclosed hall|正殿/) &&
+      !fieldAffirms(enclosure, /medicine|药寮/) &&
+      !fieldAffirms(f.Place, /medicine|药寮/)))
+    locks.push(
+      "Enclosure form: a palatial 殿 with four blind carved walls, a closed far wall and a continuous boarded coffered timber ceiling. Only hanging palace-lantern light.",
+      "Hall form: 宗门主殿. Dark lacquered 金柱 with carved year-ring relief. Ornate boarded coffered ceiling and dougong. Raised shrine dais and shrine-canopy. Year-ring root as the ancestral 神位. Empty ceremonial nave. Palace council seats only against the side walls.",
+      "Scale form: palace-nave 殿. Near 金柱 thicker than a standing person, like temple pillars. Wide empty floor. The far shrine-canopy is the sacred climax, still deep in the hall. Not a village ancestral hall, not a meeting room, not a meditation hall.",
+      "Light form: hanging palace lanterns in a dark lacquer volume; boarded ceiling stays dark; floor may take a faint reflection.",
+    );
+  else if (fieldAffirms(f.Place, /medicine|药寮/) || fieldAffirms(enclosure, /medicine|药寮/))
+    locks.push(
+      "Enclosure form: a closed medicine room with a continuous boarded timber ceiling and four walls. Only standing-lamp light.",
+      "Light form: one standing lamp; boarded timber ceiling stays dark.",
+    );
+  else if (fieldAffirms(enclosure, /indoor|enclosed hall|enclosed medicine|medicine room|正殿|室内|药寮/) ||
+    fieldAffirms(f.Place, /indoor enclosed|enclosed medicine|indoor axial|室内中轴|室内正殿|室内封闭|药寮/))
     locks.push("Enclosure form: a roofed indoor hall with beams and a solid floor.");
   if (fieldAffirms(dressing, /unreadable|不可读/))
     locks.push("Plaque form: weathered blank lintel, lettering fully lost.");
@@ -404,6 +463,31 @@ export function isShadowLook(facts: LookFacts = {}) {
   return /暗影/.test(source) && /洗掉五官|面目可不清|空而无瞳/.test(source);
 }
 
+export function isInvertedFurnaceLook(facts: LookFacts = {}, content = "") {
+  const blob = `${lookSource(facts)}\n${content}`;
+  if (/铁尺|iron (ruler|scale|bar)/i.test(blob) && !/万相炉|炉鼎/.test(blob)) return false;
+  return (
+    /万相炉|炉鼎|ding-furnace|inverted ding/i.test(blob) &&
+    /倒置|inverted|mouth downward|鼎口朝下/i.test(blob)
+  );
+}
+
+export function isIndoorSceneLook(facts: LookFacts = {}, content = "") {
+  const space = sceneSpaceKind(facts, content);
+  if (space === "hall" || space === "room") return true;
+  const fields = contentFields(content);
+  return /indoor|enclosed hall|enclosed medicine|medicine room|室内|正殿|药寮/i.test(
+    `${facts.name || ""} ${fields.Place || ""} ${fields.Enclosure || ""}`,
+  );
+}
+
+function shadowHairLine(hair: string) {
+  const text = (hair || "").trim();
+  if (!text || isNoneValue(text) || /unclear length|wear:\s*none/i.test(text))
+    return "ink-dark hair mixed into the scorched-gold shadow, length past the shoulders, wear: loose, bangs: none, hairpiece: none";
+  return stripSimiles(text);
+}
+
 function isTalismanLook(facts: LookFacts = {}) {
   return /拓印符|灵脉符/.test(`${facts.name || ""} ${lookSource(facts)}`);
 }
@@ -482,6 +566,47 @@ export function repairLookRegistry(kind: string, content: string, facts: LookFac
       /open terrace|platform/i.test(fields().Enclosure || "")
     )
       next = replaceLookField(next, "Enclosure", enclosure);
+    if (space === "hall") {
+      next = replaceLookField(
+        next,
+        "Place",
+        "Qingwu Sect Year-Ring ancestral main hall, a Chinese xianxia sect main hall",
+      );
+      next = replaceLookField(next, "Time / weather", "only dim interior lamp-and-timber light");
+      next = replaceLookField(
+        next,
+        "Scale",
+        "palace-nave 宗门主殿; near lacquered 金柱 thicker than a standing person; wide empty ceremonial nave; raised far shrine-canopy as the climax",
+      );
+      next = replaceLookField(
+        next,
+        "Near camera",
+        "four massive lacquered 金柱, thicker than a person, carved year-ring relief",
+      );
+      next = replaceLookField(
+        next,
+        "Far",
+        "distant closed end wall; raised shrine dais and carved shrine-canopy; monumental year-ring wutong root as the ancestral 神位, still under the roof",
+      );
+      next = replaceLookField(
+        next,
+        "Camera",
+        "wide ceremonial camera at the entrance threshold, looking down the empty nave through massive 金柱 toward the raised shrine-canopy",
+      );
+    }
+    if (space === "room") {
+      next = replaceLookField(next, "Enclosure", enclosureForSpace("room"));
+      next = replaceLookField(next, "Time / weather", "only dim interior lamp light");
+      next = replaceLookField(next, "Camera", cameraForSpace("room"));
+      next = replaceLookField(next, "Materials", "dark lacquered wutong timber, PBR wood grain, bronze lamp, dark stone floor");
+      next = replaceLookField(next, "Near camera", "wooden couch and standing bronze lamp");
+      next = replaceLookField(next, "Far", "closed wall of dark timber medicine cabinets, blank faces");
+      next = replaceLookField(
+        next,
+        "Set dressing",
+        "wooden couch, standing bronze lamp, dark timber medicine cabinets. Cabinet faces blank, no characters",
+      );
+    }
   }
   if (isTalismanLook(facts) && /jade/i.test(fields().Item || "")) {
     next = replaceLookField(next, "Item", "palm-size year-ring rubbing talisman");
@@ -527,12 +652,8 @@ export function lookRegistryIssues(kind: string, text: string, facts: LookFacts 
   if (isShadowLook(facts)) {
     const inner = fields["Inner robe"] || "";
     const outer = fields["Outer robe"] || "";
-    if (
-      textAffirms(text, /xianxia robe construction|Keep a single-layer xianxia robe|single xianxia cloth robe/) ||
-      (!isNoneValue(inner) && textAffirms(inner, /robe|袍/)) ||
-      (!isNoneValue(outer) && textAffirms(outer, /robe|袍/))
-    )
-      issues.push("取相残使被写成穿袍");
+    if (textAffirms(`${inner}\n${outer}`, /cyan|青袍|bright silk|embroidered gauze/))
+      issues.push("取相残使被写成华袍");
   }
   if (isBirdLook(facts, text)) {
     const inner = fields["Inner robe"] || "";
@@ -603,14 +724,73 @@ export function lookBriefIssues(kind: string, brief: string, facts: LookFacts = 
     issues.push("生图 brief 写入了禁物名词");
   if (kind === "prop" && /feather|青羽|plume/i.test(lock) && /ritual or sect (artifact|object)/i.test(lock))
     issues.push("羽被写成法器");
-  if (brief.includes("SERIES LOOK BRIEF") && lookStyleLeak.test(body))
+  const bodySansFeel = body
+    .split("\n")
+    .filter((line) => !line.startsWith("Style feel:"))
+    .join("\n");
+  if (brief.includes("SERIES LOOK BRIEF") && lookStyleLeak.test(bodySansFeel))
     issues.push("生图 brief 写入了其他画风");
   if (/Only this one bird|spirit bird|cyan xianxia spirit bird/i.test(body) &&
     /xianxia robe construction|Keep a single-layer xianxia robe|single xianxia cloth robe/i.test(body))
     issues.push("青鸟被写成穿袍");
-  if (isShadowLook(facts) &&
-    /xianxia robe construction|Keep a single-layer xianxia robe|single xianxia cloth robe/i.test(body))
-    issues.push("取相残使被写成穿袍");
+  if (isShadowLook(facts) && /silhouette sheet|fully opaque silhouette|shadow being/i.test(body))
+    issues.push("暗影窥伺被写成剪影铜像，不是人物定妆");
+  if (isShadowLook(facts) && !/xianxia robe construction/i.test(body))
+    issues.push("暗影窥伺没有和其他人物同一套袍制");
+  if (isInvertedFurnaceLook(facts, brief) && !/three legs|ding-furnace|cauldron/i.test(body))
+    issues.push("倒置炉看不出鼎炉形制");
+  if (/mist-wrapped jagged peaks|dissolving into overcast cloud behind every subject/i.test(lock))
+    issues.push("画风把雾山写成了每个主体的默认背景");
+  if (
+    (isIndoorSceneLook(facts, brief) || /年轮大殿|药寮/.test(facts.name || "")) &&
+    /mist-wrapped jagged peaks|soft overcast daylight from above|distant peaks/i.test(lock)
+  )
+    issues.push("室内景被写成露天雾山");
+  if (/年轮大殿/.test(facts.name || "") || sceneSpaceKind(facts, brief) === "hall") {
+    if (/Time \/ weather: overcast day/.test(lock))
+      issues.push("正殿写成了露天天光");
+    if (/skylight|sky well|ridge gap|light shaft|天井|天窗|oculus/.test(lock))
+      issues.push("正殿提示词写了天窗漏顶词");
+    if (!/boarded|coffered timber ceiling|continuous .*ceiling/.test(lock))
+      issues.push("正殿没有封死屋顶");
+    if (!/closed far wall|distant closed end wall/.test(lock))
+      issues.push("正殿 brief 没有封死尽头墙");
+    if (/ancient wutong root rising|full outdoor tree|(?<!shrine-)(?<!shrine )canopy/.test(lock))
+      issues.push("正殿尽头仍写成整根露天树");
+    if (/human-scale year-ring|far wall fills the end of the frame|hall deep enough for facing seats/.test(lock))
+      issues.push("正殿被写成小房间");
+    if (!/palace-nave|金柱|columns thicker than a standing person/.test(lock) ||
+      !/shrine-canopy|shrine dais|神位/.test(lock))
+      issues.push("正殿没有宗门主殿尺度");
+    if (/Camera inside a roofed room/.test(lock))
+      issues.push("正殿被写成小房间");
+    if (/kneeling cushions|meditation hall|meeting room/.test(lock) && !/side walls only/.test(lock))
+      issues.push("正殿被写成禅堂或议事厅");
+    if (!/year-ring|wutong|金柱|lacquered/.test(lock))
+      issues.push("正殿没有仙侠宗门主殿形制");
+    if (!/shrine-niche|shrine-canopy|shrine dais|神位|dougong/.test(lock))
+      issues.push("正殿没有神龛形制");
+  }
+  if (/药寮/.test(facts.name || "") || sceneSpaceKind(facts, brief) === "room") {
+    if (/Time \/ weather: overcast day|wet mist/.test(lock))
+      issues.push("药寮写成了露天天光或漏顶");
+    if (/skylight|sky well|ridge gap|light shaft|天井|天窗|oculus/.test(lock))
+      issues.push("药寮提示词写了天窗漏顶词");
+    if (!/boarded timber ceiling|solid opaque ceiling|continuous timber ceiling|closed medicine room/.test(lock))
+      issues.push("药寮没有封死屋顶");
+    if (/晚晴|labeled|On-image text/.test(lock))
+      issues.push("药寮写了人名或柜字");
+    if (!/lacquered|PBR dark lacquered/.test(lock))
+      issues.push("药寮没有跟大殿同一套材质语言");
+  }
+  if (
+    kind === "character" &&
+    /UNIVERSAL XIANXIA STYLE|cinematic 3D CGI still/i.test(lock) &&
+    !/Only this one bird|creature sheet|feathered bird/i.test(lock) &&
+    !/isolated front|isolated left profile/.test(lock) &&
+    !/Look angle: three-quarter|one full-body three-quarter/.test(lock)
+  )
+    issues.push("人物定妆不是三视图");
   if (/tongtian ancient wutong|通天古梧/.test(body) && /Architecture: keep this an open terrace or platform/i.test(body))
     issues.push("通天古梧被写成高台");
   issues.push(...lookRegistryIssues(kind, body, facts));
@@ -666,8 +846,8 @@ function sceneSpaceKind(facts: LookFacts = {}, content = "") {
     return "cliff";
   if (/外门青石/.test(name) || (/empty stone yard|青石坪/.test(`${titled}\n${place}`) && /外门/.test(name)))
     return "yard";
-  if (/年轮大殿|药寮/.test(name) || /indoor enclosed|enclosed medicine|indoor axial/.test(place))
-    return "hall";
+  if (/药寮/.test(name) || /enclosed medicine|medicine room/.test(place)) return "room";
+  if (/年轮大殿/.test(name) || /indoor enclosed|indoor axial/.test(place)) return "hall";
   return "";
 }
 
@@ -679,6 +859,7 @@ function cameraForSpace(space: string) {
       cliff: "wide grain cliff",
       yard: "wide empty stone yard",
       hall: "wide indoor hall",
+      room: "standing-eye height inside the medicine room, looking across the room",
       terrace: "wide open terrace",
     }[space] || ""
   );
@@ -691,7 +872,8 @@ function enclosureForSpace(space: string) {
       gate: "mountain gate, columns and steps as one body",
       cliff: "grain cliff",
       yard: "empty stone yard",
-      hall: "indoor enclosed hall",
+      hall: "indoor enclosed hall, continuous boarded coffered timber ceiling",
+      room: "enclosed medicine room, continuous boarded timber ceiling, four walls",
       terrace: "outdoor open terrace, no palace wings",
     }[space] || ""
   );
@@ -758,6 +940,8 @@ export function lookContentIssues(
       textAffirms(content, /courtyard|庭院|ceremonial medicine hall/i)
     )
       issues.push("药寮被写成院子或大殿");
+    if (/药寮/.test(facts.name || "") && /晚晴|labeled/i.test(content))
+      issues.push("药寮写了人名或柜字");
     if (/剑崖/.test(source) && textAffirms(content, /pavilion|亭阁/))
       issues.push("剑崖被写成亭阁");
     if (
@@ -953,9 +1137,24 @@ export function compileXianxiaLook(
     if (shadow)
       return finishLookBrief("character", [
         "SERIES LOOK BRIEF",
-        "Job: series-wide silhouette sheet for the whole production. One reusable identity, not an episode beat.",
-        `Subject: ${f.Subject}.`,
-        `Face: ${compilePortraitField(f.Face)}.`,
+        "Job: series-wide character sheet for the whole production. One reusable identity, not an episode beat.",
+        `Subject: ${lookAgeBand(facts) === "youth" ? repairYouthSubject(compileLookField(f.Subject)) : f.Subject}. Young-adult cultivator proportions, not a child, not a statue.`,
+        `Face: ${compilePortraitField(f.Face)}. Living skin of this color, features washed into the flesh, two open empty eye-holes.`,
+        `Hair: ${shadowHairLine(f.Hair)}.`,
+        "Costume: traditional Chinese xianxia robe construction (cross-collar or standing-collar, long robe silhouette, natural drape, visible weave). The colors, layers and ornament level below belong to this character; the selected style decides fabric feel, wind, materials and light.",
+        isNoneValue(inner) || textAffirms(inner, /cyan|青袍|bright silk/)
+          ? "Inner robe: a full-length cross-collar robe in scorched-gold mixed with withered-bone lacquer, one shadow-colored surface."
+          : `Inner robe: ${compileLookField(inner)}.`,
+        isNoneValue(outer)
+          ? "Outer robe: none specified; the inner robe is the full-length robe."
+          : `Outer robe: ${compileLookField(outer)}.`,
+        isNoneValue(overlay) ? "Overlay: none specified." : `Overlay: ${overlay}.`,
+        isNoneValue(embroidery) ? "Embroidery: none specified." : `Embroidery: ${embroidery}.`,
+        isNoneValue(waist) ? "Waist: plain sash." : `Waist: ${waist}.`,
+        isNoneValue(extras) || /^no /i.test(extras)
+          ? `Other accessories: ${extras || "none"}.`
+          : `Other accessories: ${extras}.`,
+        isNoneValue(shoes) ? "Shoes: dark cloth boots." : `Shoes: ${shoes}.`,
         shadowBodyLine,
         `Pose: ${f.Pose || "standing upright, hands hanging naturally at sides, weight even."}`,
         characterLookAngleLine(angle),
@@ -994,22 +1193,27 @@ export function compileXianxiaLook(
   if (kind === "prop") {
     assertPropContent(content);
     const f = contentFields(content);
+    const invertedFurnace = isInvertedFurnaceLook(facts, content);
     return finishLookBrief("prop", [
       "SERIES LOOK BRIEF",
       "Job: series-wide hero prop for the whole production. One reusable object, not an episode-use state.",
       `Item: ${
-        fieldAffirms(f.Item, /empty-eye|空眼|empty wells|空孔/) ||
-        fieldAffirms(f.Form, /empty-eye|空眼|empty wells|空孔/)
-          ? repairEmptyEyeNouns(compileLookField(f.Item))
-          : compileLookField(f.Item)
+        invertedFurnace
+          ? `${compileLookField(f.Item) || "inverted ding, mouth downward"}`
+          : fieldAffirms(f.Item, /empty-eye|空眼|empty wells|空孔/) ||
+            fieldAffirms(f.Form, /empty-eye|空眼|empty wells|空孔/)
+            ? repairEmptyEyeNouns(compileLookField(f.Item))
+            : compileLookField(f.Item)
       }.`,
       `Size impression: ${f["Size impression"]}.`,
       `Materials: ${f.Materials}.`,
       `Form: ${
-        fieldAffirms(f.Item, /empty-eye|空眼|empty wells|空孔/) ||
-        fieldAffirms(f.Form, /empty-eye|空眼|empty wells|空孔/)
-          ? repairEmptyEyeNouns(compileLookField(f.Form))
-          : compileLookField(f.Form)
+        invertedFurnace
+          ? `${compileLookField(f.Form)}. ${invertedFurnaceFormLine}`
+          : fieldAffirms(f.Item, /empty-eye|空眼|empty wells|空孔/) ||
+            fieldAffirms(f.Form, /empty-eye|空眼|empty wells|空孔/)
+            ? repairEmptyEyeNouns(compileLookField(f.Form))
+            : compileLookField(f.Form)
       }.`,
       `Ornament: ${f.Ornament}.`,
       `Color accents: ${f["Color accents"]}.`,
@@ -1031,15 +1235,23 @@ export function compileXianxiaLook(
   const tree = isTreeLook(facts.name || "") || /tongtian|ancient wutong|通天古梧|standing tree/i.test(`${f.Place} ${enclosure} ${facts.name || ""}`);
   const space = sceneSpaceKind(facts, content);
   const enclosureOut =
-    space && space !== "terrace" && /open terrace|platform/i.test(enclosure)
+    space === "room"
+      ? enclosureForSpace("room")
+      : space === "hall"
+        ? enclosureForSpace("hall")
+      : space && space !== "terrace" && /open terrace|platform/i.test(enclosure)
       ? enclosureForSpace(space)
       : tree && /open terrace|platform/i.test(enclosure)
         ? "standing tree in cloud"
         : enclosure;
   const cameraOut =
-    space && space !== "terrace" && /open terrace|platform/i.test(f.Camera || "")
-      ? cameraForSpace(space)
-      : f.Camera;
+    space === "hall"
+      ? "wide ceremonial camera at the entrance threshold, looking down the empty nave through massive 金柱 toward the raised shrine-canopy"
+      : space === "room"
+      ? cameraForSpace("room")
+      : space && space !== "terrace" && /open terrace|platform/i.test(f.Camera || "")
+        ? cameraForSpace(space)
+        : f.Camera;
   const openTerrace =
     space === "terrace" ||
     (!space &&
@@ -1048,31 +1260,66 @@ export function compileXianxiaLook(
       !/山门|gate|崖|cliff|树|tree|wutong|古梧|巨梧|外门|stone yard|青石/i.test(
         `${enclosureOut} ${f.Place || ""} ${facts.name || ""}`,
       ));
+  const indoor = space === "hall" || space === "room" || isIndoorSceneLook(facts, content);
   return finishLookBrief("scene", [
     "SERIES LOOK BRIEF",
     "Job: series-wide empty set plate for the whole production, not an episode shot.",
-    `Place: ${compileLookField(f.Place)} as an immortal-sect set.`,
+    space === "hall"
+      ? "Place: Qingwu Sect Year-Ring ancestral main hall, a Chinese xianxia sect main hall."
+      : `Place: ${compileLookField(f.Place)} as an immortal-sect set.`,
     enclosureOut
       ? tree
         ? `Enclosure: ${enclosureOut}.`
         : `Enclosure: ${enclosureOut}. Keep this spatial type; do not convert it into another space type.`
       : "",
-    scale ? `Scale: ${scale}.` : "",
-    openTerrace
-      ? "Architecture: keep this an open terrace or platform. Do not add flying eaves, dougong, palace halls or walled courts."
-      : "",
-    `Time / weather: ${f["Time / weather"]}.`,
-    `Near camera: ${f["Near camera"]}.`,
-    `Mid: ${f.Mid}.`,
-    `Far: ${f.Far}.`,
-    `Materials: ${f.Materials}.`,
-    `Set dressing: ${dressing}.`,
+    space === "hall"
+      ? "Scale: palace-nave 宗门主殿; near lacquered 金柱 thicker than a standing person; wide empty ceremonial nave; raised far shrine-canopy as the climax."
+      : scale
+        ? `Scale: ${scale}.`
+        : "",
+    space === "hall"
+      ? "Architecture: Qingwu Sect Year-Ring 宗门主殿 — a palatial worship-and-audience 殿, same hall-type as a dark lacquered immortal palace main hall. The entire frame is interior and enclosed. Four massive lacquered 金柱 in the foreground, thicker than a standing person, carved with year-ring / wutong relief, not cranes. High ornate coffered timber ceiling, fully boarded, lanterns hanging from the beams. Blind carved-lacquer walls. Empty ceremonial nave: polished dark stone floor, no cushions on the axis. Against the side walls only: carved palace council seats. At the far closed end a raised 月台 and carved shrine-canopy; the ancestral 神位 is a monumental standing wutong root showing a huge concentric year-ring face, still under the boarded roof. Palace lanterns. Weathered blank lintel. Not a meeting room, not a meditation hall, not a village 祠堂, not a house interior."
+      : space === "room"
+        ? "Architecture: Qingwu Sect medicine room, human-scale and fully enclosed. Same dark lacquered timber and hanging-lantern volume as the sect interiors. Continuous boarded timber ceiling with exposed beams. Dark lacquered timber walls. Wooden couch, standing bronze lamp, medicine cabinets. Camera at standing-eye height looking across the room."
+        : openTerrace
+          ? "Architecture: keep this an open terrace or platform. Do not add flying eaves, dougong, palace halls or walled courts."
+          : "",
+    space === "hall"
+      ? "Time / weather: only hanging palace lanterns. Floor, walls and boarded coffered ceiling stay in indoor shadow."
+      : space === "room"
+        ? "Time / weather: only the standing bronze lamp. Floor, walls and boarded timber ceiling stay in indoor shadow."
+      : `Time / weather: ${f["Time / weather"]}.`,
+    space === "hall"
+      ? "Near camera: four massive lacquered 金柱, thicker than a person, carved year-ring relief."
+      : space === "room"
+        ? "Near camera: wooden couch and standing bronze lamp."
+      : `Near camera: ${f["Near camera"]}.`,
+    space === "hall"
+      ? "Mid: empty ceremonial nave; polished dark floor; palace lanterns; council seats only against the side walls."
+      : space === "room"
+        ? "Mid: dark lacquered timber volume; boarded ceiling; medicine cabinets."
+      : `Mid: ${f.Mid}.`,
+    space === "hall"
+      ? "Far: distant closed end wall; raised shrine dais and shrine-canopy; monumental year-ring root as the ancestral 神位, still under the roof."
+      : space === "room"
+        ? "Far: closed wall of dark timber medicine cabinets, blank faces."
+      : `Far: ${f.Far}.`,
+    space === "hall"
+      ? "Materials: dark lacquered timber, year-ring carving, bronze palace lanterns, polished dark stone."
+      : space === "room"
+        ? "Materials: dark lacquered wutong timber, PBR wood grain, bronze lamp, dark stone floor."
+      : `Materials: ${f.Materials}.`,
+    space === "hall"
+      ? "Set dressing: empty ceremonial nave; carved palace council seats against the side walls only; raised shrine-canopy over the year-ring root 神位; weathered blank lintel with no characters; palace lanterns."
+      : space === "room"
+        ? "Set dressing: wooden couch, standing bronze lamp, dark timber medicine cabinets. Cabinet faces blank, no characters."
+      : `Set dressing: ${dressing}.`,
     quoted
       ? `On-image text: the lintel plaque reads "${quoted}".`
       : "",
     "People: none. Draw no people, hands, faces, silhouettes or distant figures.",
     `Camera: ${cameraOut}.`,
-    lookStyleFeelLine("scene"),
+    lookStyleFeelLine("scene", { indoor, hall: space === "hall" }),
     ...lookCompileLocks("scene", content),
   ], facts);
 }
@@ -1099,7 +1346,9 @@ export type VisualStyle = {
   propModule?: string;
   sceneModule?: string;
   version?: string;
+  lookGrade?: string | null;
   referenceImageId?: string | null;
+  hallScaleImageId?: string | null;
   visualRevision?: number;
 };
 
@@ -1109,6 +1358,7 @@ export function visualStyleKey(style: VisualStyle) {
     style.id, style.version || "", style.prompt, style.productionPrompt || "",
     style.characterModule || "", style.propModule || "", style.sceneModule || "",
     style.referenceImageId || "",
+    style.lookGrade || "",
     style.visualRevision || 0,
   ]);
 }
@@ -1118,7 +1368,7 @@ export function visualReviewPrompt(style: VisualStyle) {
 }
 
 const legacyXianxiaDna =
-  /Chinese 3D xianxia donghua from one same series\.|High-finish 3D CGI Chinese xianxia production look/;
+  /Chinese 3D xianxia donghua from one same series\.|High-finish 3D CGI Chinese xianxia production look|mist-wrapped jagged peaks/;
 
 /** Show the current built-in wording for any older built-in xianxia text; keep custom lines added after it. */
 export function normalizedXianxiaDna(prompt: string) {
@@ -1134,25 +1384,47 @@ export function normalizedXianxiaDna(prompt: string) {
 /** Asset details can vary; the selected production art direction cannot. */
 export function selectedVisualStyleRule(style: VisualStyle) {
   const xianxia = isXianxiaLookLock(style.prompt);
-  const donghua3d = /(?:Semi-realistic 3D CG|High-finish 3D CGI|3D xianxia donghua|stylized 3D donghua|三维国漫)/i.test(productionStyleDna(style));
-  return `GLOBAL STYLE PRIORITY: The selected production style above is authoritative for every image in this series: rendering medium, anatomy treatment, costume design language, materials, lighting and color grading. Asset content and local revision requests specify identity, age, species, outfit details and composition only; they cannot change the selected art direction. Interpret all described garments, accessories and environments within that style while preserving their specified colors and distinguishing details.${xianxia ? " Every outfit must belong to the same Chinese xianxia world, including plain clothing and costume changes; do not introduce modern or Western costume construction. Do not turn a simple outfit into a different art style. When the subject is architecture or a prop, draw no people, hands, faces, silhouettes or mannequins." : ""}${donghua3d ? " Render every subject with the same semi-realistic 3D CG xianxia key-art treatment. Do not render as plastic toy, Pixar, flat anime cel, modern coat or product photography." : ""}`;
+  const donghua3d = /(?:cinematic 3D CGI|Semi-realistic 3D CG|High-finish 3D CGI|3D xianxia donghua|stylized 3D donghua|三维国漫)/i.test(productionStyleDna(style));
+  return `GLOBAL STYLE PRIORITY: The selected [STYLE] above is authoritative for rendering medium, anatomy treatment, material response and lighting language. LOOK and SUBJECT specify color grade, weather, fog, incense, costume colors and identity; they cannot change the rendering language. Interpret all described garments, accessories and environments in that rendering language while preserving their specified colors and distinguishing details.${xianxia ? " Every outfit must belong to the same Chinese xianxia world, including plain clothing and costume changes; do not introduce modern or Western costume construction. Do not turn a simple outfit into a different art style. When the subject is architecture or a prop, draw no people, hands, faces, silhouettes or mannequins." : ""}${donghua3d ? " Render every subject as a cinematic 3D CGI still with hyper-detailed PBR and filmic sculpted light. Not anime, not painterly 2D, not illustration brushwork." : ""}`;
 }
 
-export function worldStyleDna(style: VisualStyle) {
+export function worldStyleDna(style: VisualStyle, options: { indoor?: boolean } = {}) {
   const dna = xianxiaModules(style)?.dna || style.prompt;
   if (!isUniversalXianxia(style)) return dna;
   if (dna.startsWith(sharedStyleDna))
-    return `${xianxiaWorldDna}${dna.slice(sharedStyleDna.length)}`;
+    return `${options.indoor ? xianxiaIndoorWorldDna : xianxiaWorldDna}${dna.slice(sharedStyleDna.length)}`;
   return `${dna}\n\n${emptySceneRule}`;
+}
+
+const mistakenMountainVista =
+  /mist-wrapped jagged peaks, pines and distant pavilion roofs dissolving into overcast cloud behind every subject/;
+
+/** Only the v4 catalog line that forced a mountain behind every subject; user-locked wording stays. */
+function catalogXianxiaDna(prompt: string) {
+  if (!prompt.startsWith("UNIVERSAL XIANXIA STYLE") || prompt.startsWith(sharedStyleDna))
+    return prompt;
+  if (!mistakenMountainVista.test(prompt)) return prompt;
+  const marker = "Same visual family for characters, props, and sets.";
+  const tail = prompt.includes(marker)
+    ? prompt.slice(prompt.indexOf(marker) + marker.length)
+    : "";
+  return `${sharedStyleDna}${tail}`;
+}
+
+function staleLookModule(stored: string | undefined, current: string) {
+  if (!stored) return current;
+  if (/softly blurred mist and distant peaks|cloud-wrapped peaks|peaks blurred behind/i.test(stored))
+    return current;
+  return stored;
 }
 
 export function xianxiaModules(style: VisualStyle) {
   if (isXianxiaLookLock(style.prompt))
     return {
-      dna: style.prompt,
-      character: style.characterModule || characterSheetModule,
-      prop: sanitizePropModule(style.propModule || propSheetModule),
-      scene: style.sceneModule || sceneSheetModule,
+      dna: catalogXianxiaDna(style.prompt),
+      character: staleLookModule(style.characterModule, characterSheetModule),
+      prop: sanitizePropModule(staleLookModule(style.propModule, propSheetModule)),
+      scene: staleLookModule(style.sceneModule, sceneSheetModule),
     };
   if (style.characterModule && style.propModule && style.sceneModule)
     return {
@@ -1243,16 +1515,34 @@ export function isSeriesMasterLook(asset: {
   );
 }
 
-export function masterReferenceNote(kind: string) {
-  if (kind === "character")
-    return "Master series style reference: match render family, grading, atmosphere, lighting, skin and fabric finish at high strength (style high). Do not copy this face, age, gender, hair color, hairstyle, forehead mark, costume, spell effect or identity (likeness low); this character's own content decides those.";
-  if (kind === "scene")
-    return "Master series style reference: match palette, materials and lighting only at high strength (style high). Empty architecture only. Draw no people. Do not copy the person, face, body, costume or pose (likeness low).";
-  return "Master series style reference: match palette, materials and lighting only at high strength (style high). One object only. Draw no people. Do not copy the person, hands, face or costume (likeness low).";
+export function isHallLookAsset(asset: { id?: string; name?: string; kind?: string }) {
+  return asset.kind === "scene" && /年轮大殿|scene-dadian/i.test(`${asset.name || ""} ${asset.id || ""}`);
 }
 
-function joinLook(style: string, assetType: string, content: string) {
-  return `${style}\n\n${assetType}\n\n${content}`;
+export function isMedicineRoomLookAsset(asset: { id?: string; name?: string; kind?: string }) {
+  return asset.kind === "scene" && /药寮|scene-yaoliao/i.test(`${asset.name || ""} ${asset.id || ""}`);
+}
+
+export function indoorStyleFromHallNote() {
+  return "Indoor STYLE reference only. Copy cinematic 3D CGI, dark lacquered timber, PBR wood and metal, filmic sculpted lantern light (style high). Do not copy this photograph's nave, 金柱, shrine, empty ceremonial floor or palace scale (likeness low). This SUBJECT is a human-scale enclosed medicine room: boarded ceiling, wooden couch, standing bronze lamp, medicine cabinets. Cabinet faces blank, no writing.";
+}
+
+export function hallScaleReferenceNote() {
+  return "Hall TYPE reference: copy this photograph as a 宗门主殿 — palatial worship nave, massive lacquered 金柱, ornate boarded coffered timber ceiling, empty ceremonial floor, raised shrine climax (hall-type high). Do not copy this photograph's plaque text, crane relief, open sides or mountains (likeness low). Enclosure from SUBJECT: four blind walls, continuous boarded timber ceiling. Shrine identity from SUBJECT: year-ring wutong root as 神位, not this plaque.";
+}
+
+export function masterReferenceNote(kind: string) {
+  const hand =
+    "Master series style reference: the rendering language only. Copy cinematic 3D CGI, idealized realistic face and body, sharp elegant bone, PBR skin and silk, filmic sculpted light, crisp micro-detail at high strength (style high). Backdrop color in that photo does not matter. Do not copy this person's hair color, costume, pose, lightning, mountains, weather, fog or identity (likeness low).";
+  if (kind === "character")
+    return `${hand} This character's own content decides who they are.`;
+  if (kind === "scene")
+    return `${hand} Empty architecture only. Draw no people. This scene's own enclosure and architecture decide the place.`;
+  return `${hand} One object only. Draw no people.`;
+}
+
+function joinLook(style: string, assetType: string, content: string, look = "") {
+  return [style, look, assetType, content].filter(Boolean).join("\n\n");
 }
 
 function compileAssetVisualPrompt(
@@ -1282,27 +1572,39 @@ function compileAssetVisualPrompt(
   const angle = options?.angle || "three-quarter";
   if (modules) {
     asset = prepareAssetForLook(asset, assets);
-    const dna = asset.kind === "character" ? modules.dna : worldStyleDna(style);
+    const indoor = asset.kind === "scene" && isIndoorSceneLook(facts, asset.prompt);
+    const dna = asset.kind === "character" ? modules.dna : worldStyleDna(style, { indoor });
     if (asset.kind === "character") {
       assertCharacterContent(asset.prompt);
       const native = compileXianxiaLook("character", asset.prompt, angle, facts);
       const bird = isBirdLook(facts, asset.prompt);
       const identity = bird ? creatureIdentityRule : characterIdentityRule;
-      const sheet = bird ? creatureSheetModule : modules.character;
-      return joinLook(dna, sheet, isUniversalXianxia(style) ? `${identity}\n${native}` : native);
+      const sheet = bird
+        ? creatureSheetModule
+        : angle === "front" || angle === "side"
+          ? characterSheetForAngle(angle)
+          : modules.character;
+      return joinLook(dna, sheet, isUniversalXianxia(style) ? `${identity}\n${native}` : native, lookGradeBlock(style));
     }
     if (asset.kind === "prop") {
       const native =
         asset.promptFormat === "prop-content-v1" || /CONTENT — PROP/i.test(asset.prompt)
           ? compileXianxiaLook("prop", asset.prompt, "three-quarter", facts)
           : asset.prompt;
-      return joinLook(dna, modules.prop, `${emptyPropRule}\n${native}`);
+      return joinLook(dna, modules.prop, `${emptyPropRule}\n${native}`, lookGradeBlock(style));
     }
     const native =
       asset.promptFormat === "scene-content-v1" || /CONTENT — SCENE/i.test(asset.prompt)
         ? compileXianxiaLook("scene", asset.prompt, "three-quarter", facts)
         : asset.prompt;
-    return joinLook(dna, modules.scene, `${emptySceneRule}\n${native}`);
+    const space = asset.kind === "scene" ? sceneSpaceKind(facts, asset.prompt) : "";
+    const sheet =
+      space === "hall" && (!style.sceneModule || style.sceneModule === sceneSheetModule)
+        ? indoorHallSheetModule
+        : indoor && (!style.sceneModule || style.sceneModule === sceneSheetModule)
+          ? indoorSceneSheetModule
+        : modules.scene;
+    return joinLook(dna, sheet, `${emptySceneRule}\n${native}`, lookGradeBlock(style));
   }
   if (asset.kind === "character" && style.prompt.startsWith("STYLE LOCK —")) {
     assertCharacterContent(asset.prompt);
@@ -1390,10 +1692,10 @@ ${propContentTemplate}
 场景模板：
 ${sceneContentTemplate}
 场景 People 必须为 none，建筑与背景严格无人，包括远处人影、倒影和剪影。人物只进入后续剧情镜头，不进入场景定妆。
-不同角色必须依据各自登记明确脸型、眉眼、发型与发饰、内外袍颜色、衣袍轮廓、纹样与专属饰物，不能套用沈不言的脸、发髻和黑袍。全局画风决定整部剧的渲染方式、服装设计语言与材质表现，任何角色或单图调整都不得覆盖。服装颜色、层次、袖宽、纹样、配饰与年龄体型遵循该角色；朴素或华丽、不同职业和换装仍必须属于作品选定的同一世界和美术体系，采用该画风的服装剪裁与材质表现，不得因服装不同切换渲染方式。服装描述使用仙侠袍制（交领或立领、袍身、袖、襟），不要写成现代大衣、西装或夹克；布衣旧衣也必须是仙侠袍制，只是料更素、纹更少。罩衫、刺绣、玉佩、流苏按该角色身份与登记决定层次：华贵者写明纹样与饰物，素净者写 none；画风本身的仙气、风动、雾景、光线由程序统一提供，不写进 CONTENT。脸、发色、发式、袍色、体量、独有标记必须因人而异，写出每个角色自己的辨识点。来源未指定的设计细节可以按角色身份补全，不能改动已明确设定。同宗服装可有共同元素，但不能让不同角色仅换名字。
-禁止夜雨、黄昏、熄灯、高烧、闭眼、出剑作为剧情状态。只有本批已有该角色独立佩剑道具时，角色 Other accessories 才写 no weapon；登记要腰侧归鞘且没有独立剑资产时，必须写腰侧归鞘与剑穗。内容冲突时改内容，绝不改通用画风或 ASSET 类型。同一地点非变体只出一张主定妆；门外、末阶等视图不要单独建资产。角色同一身份只写一份 CONTENT；程序再出三张同尺寸全身（四分之三、正面、侧面），不要为角度另建资产。成长阶段用 variantKind=growth；换装用 costume；破败用 form。
+不同角色必须依据各自登记明确脸型、眉眼、发型与发饰、内外袍颜色、衣袍轮廓、纹样与专属饰物，不能套用沈不言的脸、发髻和黑袍。全局画风决定整部剧的渲染方式、服装设计语言与材质表现，任何角色或单图调整都不得覆盖。服装颜色、层次、袖宽、纹样、配饰与年龄体型遵循该角色；朴素或华丽、不同职业和换装仍必须属于作品选定的同一世界和美术体系，采用该画风的服装剪裁与材质表现，不得因服装不同切换渲染方式。服装描述使用仙侠袍制（交领或立领、袍身、袖、襟），不要写成现代大衣、西装或夹克；布衣旧衣也必须是仙侠袍制，只是料更素、纹更少。罩衫、刺绣、玉佩、流苏按该角色身份与登记决定层次：华贵者写明纹样与饰物，素净者写 none；画风只锁渲染语言，颜色、天气、雾只有内容点名才写，禁止把画风句写进 CONTENT。脸、发色、发式、袍色、体量、独有标记必须因人而异，写出每个角色自己的辨识点。来源未指定的设计细节可以按角色身份补全，不能改动已明确设定。同宗服装可有共同元素，但不能让不同角色仅换名字。
+禁止夜雨、黄昏、熄灯、高烧、闭眼、出剑作为剧情状态。只有本批已有该角色独立佩剑道具时，角色 Other accessories 才写 no weapon；登记要腰侧归鞘且没有独立剑资产时，必须写腰侧归鞘与剑穗。内容冲突时改内容，绝不改通用画风或 ASSET 类型。同一地点非变体只出一张主定妆；门外、末阶等视图不要单独建资产。角色同一身份只写一份 CONTENT；程序再出三张同尺寸全身（四分之三、正面、侧面各一张），不要为角度另建资产，也不要画在同一张图里。成长阶段用 variantKind=growth；换装用 costume；破败用 form。
 只许把本条外观登记翻译进 CONTENT，不许改物件种类：符仍是符，匣仍是匣，羽仍是羽，鸟仍是鸟，树仍是树。设定未写年长或 ageBand=youth 时 Subject 写 youth，脸是青年；父兄式身量只写宽肩厚背的青年体量，禁止写 father-brother、父亲、年长、中年。模板括号里的示例不是默认形制，不要因为示例写了 jade token、round box、open terrace 就把登记改成这些。青鸟、灵兽全部 Costume 写 none，不要写袍。通天古梧 Enclosure 写 standing tree in cloud，不要写 open terrace 或 platform。Camera 必须跟 Enclosure 同类：山门写 wide mountain gate，剑崖写 wide grain cliff，外门写 wide empty stone yard，古梧写 wide standing tree，只有问道台或开敞高台才写 wide open terrace。
-只写正面形制，不要写「不是什么」。空眼写贴面空板与两口空井；铁尺写铁条与尺面倒置年轮；羽写一根羽；倒置炉鼎口朝下。场景必须填写 Enclosure 与 Scale：室内正殿写封闭梁架与尽头神位，开敞高台写人尺和台下仰看，通天树写整棵树入云。飞檐、斗拱、宫墙只在内容明确要求时写。宗门山门牌匾写该宗之名，只此宗名；故事写明无匾或字迹不可读时才不写字。通天古梧写整棵通天树，冠顶和根底入云，不要写成一截树皮特写。每一条定妆只写该资产自己。章节只作参考，已单独登记的其他地点、人物、道具不要写进本条。山门只写门柱石阶牌匾，通天古梧只写这棵树，不要合成一张。空间事实从写到该资产的句子抽取；定妆写全剧可复用形制，不写某一集的布置、仪式或天气。道具写物件自己的形制，不要升格成法器静物。
+只写正面形制，不要写「不是什么」。空眼写贴面空板与两口空井；铁尺写铁条与尺面倒置年轮；羽写一根羽；倒置炉鼎口朝下，写三足两耳圆腹鼎炉、三足朝上，碎镜是鼎身材质。暗影窥伺仍是人物定妆：青年体量、有发、同款仙侠袍，脸与肤是焦金枯骨漆、洗掉五官、空瞳。场景必须填写 Enclosure 与 Scale：室内正殿和药寮必须封顶四壁、Camera 在室内；正殿写封闭梁架与尽头神位，药寮写人尺封闭药室，开敞高台写人尺和台下仰看，通天树写整棵树入云。飞檐、斗拱、宫墙只在内容明确要求时写。宗门山门牌匾写该宗之名，只此宗名；故事写明无匾或字迹不可读时才不写字。通天古梧写整棵通天树，冠顶和根底入云，不要写成一截树皮特写。每一条定妆只写该资产自己。章节只作参考，已单独登记的其他地点、人物、道具不要写进本条。山门只写门柱石阶牌匾，通天古梧只写这棵树，不要合成一张。空间事实从写到该资产的句子抽取；定妆写全剧可复用形制，不写某一集的布置、仪式或天气。道具写物件自己的形制，不要升格成法器静物。
 返回 JSON {"summary":"说明","assets":[{"id":"entityId:variantId","name":"名称","kind":"character或scene或prop","promptFormat":"character-content-v1或prop-content-v1或scene-content-v1","prompt":"填好的内容","identity":"固定身份","state":"可复用形制","entityId":"实体ID","variantId":"变体ID","variantKind":"growth或costume或form","growthStage":"child|teen|youth|adult|elder或空"}],"voices":[]}。
 外观登记：${registryJson}
 可复用库：${libraryJson}

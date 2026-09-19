@@ -169,7 +169,7 @@ describe("持久任务规则", () => {
     s.setVisualTemplate(p.id, "donghua3d");
     expect(s.visualStyle(p.id).id).toBe("donghua3d");
     expect(s.visualStyle(p.id).prompt).toContain("UNIVERSAL XIANXIA STYLE");
-    expect(s.visualStyle(p.id).prompt).toContain("cold, ethereal, immortal");
+    expect(s.visualStyle(p.id).prompt).toContain("cinematic 3D CGI still");
     expect(s.visualStyle(p.id).referenceImageId).toBeFalsy();
     const assets = s.one<any>("SELECT * FROM tasks WHERE stage=3")!;
     const rev = assets.revision;
@@ -193,7 +193,7 @@ describe("持久任务规则", () => {
     expect(s.visualStyle(p.id).version).toBe("xianxia-3d-v3");
     s.setVisualTemplate(p.id, "donghua3d");
     expect(s.visualStyle(p.id).prompt).toContain("UNIVERSAL XIANXIA STYLE");
-    expect(s.visualStyle(p.id).version).toBe("xianxia-universal-v4");
+    expect(s.visualStyle(p.id).version).toBe("xianxia-universal-v9");
     expect(s.visualStyle(p.id).characterModule).toContain("character sheet");
     expect(s.task(assets.id).revision).toBe(rev + 1);
     s.db.run("UPDATE project_settings SET data=? WHERE projectId=?", [

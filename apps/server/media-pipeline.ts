@@ -2,6 +2,7 @@ import {
   assetLookAgentPrompt,
   assetVisualPrompt,
   lookSheetOptions,
+  assetLookSheetOptions,
   characterLookViewsComplete,
   generationReviewPrompt,
   assertCharacterContent,
@@ -20,7 +21,6 @@ import {
   isSeriesMasterLook,
   isXianxiaLookLock,
   isUniversalXianxia,
-  masterReferenceNote,
   xianxiaModules,
 } from "../../packages/visual-style";
 import {
@@ -538,7 +538,6 @@ export class MediaPipeline {
     }
   }
   assetReferences(task: Task, asset: AssetPlan["assets"][number], assets: AssetPlan["assets"], baseImageId?: string) {
-    const style = this.runtime.store.visualStyle(task.projectId);
     const ids: string[] = [];
     const notes: string[] = [];
     const add = (id: string, role: string) => {
@@ -554,13 +553,6 @@ export class MediaPipeline {
       add(source.imageId, `the source design for ${asset.sourceUsage || "view"}; preserve its geometry, identity and materials, show only the requested asset or view. Do not independently redesign it.`);
     }
     if (baseImageId) add(baseImageId, "the same asset identity in another state; retain its defining design.");
-    if (style.referenceImageId)
-      add(
-        style.referenceImageId,
-        xianxiaModules(style)
-          ? masterReferenceNote(asset.kind)
-          : "production style only: match the selected visual style, shape language and rendering finish; do not copy this subject, face, age, hair color, costume, pose or background into a different asset.",
-      );
     return { ids, notes: notes.length ? `\n\nREFERENCE ROLES\n${notes.join("\n")}` : "" };
   }
 
@@ -587,7 +579,6 @@ export class MediaPipeline {
     if (asset.kind !== "character" || !asset.imageId) return;
     const { store, media } = this.runtime;
     const style = store.visualStyle(task.projectId);
-    // Views must compile from the same registry facts as the main sheet (empty-eye, youth, bird).
     const facts = this.lookFacts(task, asset);
     asset.viewImages = { ...asset.viewImages };
     for (const angle of ["front", "side"] as const) {
@@ -771,7 +762,7 @@ export class MediaPipeline {
       "image",
       generationPrompt,
       refs.ids,
-      lookSheetOptions({
+      assetLookSheetOptions(asset, {
         visualStyleKey: visualStyleKey(style),
         visualRevision: store.settings(p.id).visualRevision || 0,
       }),
@@ -1333,24 +1324,6 @@ export class MediaPipeline {
           ? `定妆先核对完全部生图提示词，通过后再按最多 ${lookImageConcurrency} 路并发生图；角色各用自己的造型，场景严格无人。`
           : `定妆先核对完全部生图提示词，通过后再按最多 ${lookImageConcurrency} 路并发生图；沈不言主参考先出，其余并行。`,
       );
-      const lookImageSatisfied = (asset: AssetPlan["assets"][number]) => {
-        const ready =
-          (asset.imageId &&
-            !store.modelReviewEnabled(task.projectId) &&
-            sameLookStyleFamily(asset.generationStyleKey, style) &&
-            !assetContentDrifted(asset)) ||
-          (isAssetImageLocked(asset) &&
-            sameLookStyleFamily(asset.generationStyleKey, style) &&
-            !assetContentDrifted(asset)) ||
-          !!(
-            asset.imageId &&
-            asset.imageReview?.pass === false &&
-            asset.imageReview.imageId === asset.imageId &&
-            asset.imageReview.policyVersion !== assetReviewPolicyVersion &&
-            asset.generationStyleKey === visualStyleKey(style)
-          );
-        return ready && characterLookViewsComplete(asset);
-      };
       const factsFor = (asset: AssetPlan["assets"][number]) =>
         lookFactsFromContext(
           asset,
@@ -1376,6 +1349,45 @@ export class MediaPipeline {
             : "");
         assertLookBrief(asset.kind, generationPrompt, facts);
         return generationPrompt;
+      };
+      const lookGenerationCurrent = (asset: AssetPlan["assets"][number]) => {
+        const base = asset.baseLibraryId
+          ? library.find((a) => a.libraryId === asset.baseLibraryId)
+          : undefined;
+        const refs = this.assetReferences(
+          task,
+          asset,
+          data.assets,
+          base?.generationStyleKey === visualStyleKey(style)
+            ? base.imageId
+            : undefined,
+        );
+        return compileLookGeneration(asset, refs);
+      };
+      const lookImageSatisfied = (asset: AssetPlan["assets"][number]) => {
+        const ready =
+          (asset.imageId &&
+            !store.modelReviewEnabled(task.projectId) &&
+            sameLookStyleFamily(asset.generationStyleKey, style) &&
+            !assetContentDrifted(asset)) ||
+          (isAssetImageLocked(asset) &&
+            sameLookStyleFamily(asset.generationStyleKey, style) &&
+            !assetContentDrifted(asset)) ||
+          !!(
+            asset.imageId &&
+            asset.imageReview?.pass === false &&
+            asset.imageReview.imageId === asset.imageId &&
+            asset.imageReview.policyVersion !== assetReviewPolicyVersion &&
+            asset.generationStyleKey === visualStyleKey(style)
+          );
+        if (!(ready && characterLookViewsComplete(asset))) return false;
+        if (asset.sourceUsage === "view") return true;
+        try {
+          const base = (prompt: string) => prompt.split("\n上次审核意见")[0];
+          return base(asset.generationPrompt || "") === base(lookGenerationCurrent(asset));
+        } catch {
+          return false;
+        }
       };
       let contentTurn = Promise.resolve();
       const reviewLookContent = async (
@@ -1507,7 +1519,10 @@ export class MediaPipeline {
               "image",
               generationPrompt,
               refs.ids,
-              lookVisualOptions,
+              assetLookSheetOptions(asset, {
+                visualStyleKey: lookVisualOptions.visualStyleKey,
+                visualRevision: lookVisualOptions.visualRevision,
+              }),
               workSignal,
               undefined,
               retryRejected,

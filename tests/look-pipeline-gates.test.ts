@@ -101,7 +101,7 @@ test("未按登记修复的走样稿，形制闸能抓住改物件种类", () =>
       sceneModule?: string;
       referenceImageId?: string;
     };
-    // 作品画风必须是按参考图重写的 v4 感觉稿，并挂了参考图
+    // 作品画风必须是现行感觉稿（雾山不是默认背景），并挂了参考图
     expect(locked.version).toBe(donghuaStyleVersion);
     expect(locked.prompt).toBe(sharedStyleDna);
     expect(locked.referenceImageId).toBeTruthy();
@@ -140,22 +140,21 @@ test("未按登记修复的走样稿，形制闸能抓住改物件种类", () =>
         compiled = assetVisualPrompt(style, { ...asset, prompt: repaired }, [], { facts });
         brief = lookBriefIssues(asset.kind, compiled, facts);
         if (!compiled.startsWith(asset.kind === "character" ? sharedStyleDna : xianxiaWorldDna))
-          brief.push("未以作品选定的 v4 仙侠感觉稿开头");
+          brief.push("未以作品选定的仙侠感觉稿开头");
+        if (/mist-wrapped jagged peaks|behind every subject/i.test(compiled))
+          brief.push("编译仍把雾山写成默认背景");
         if (/porcelain-pale|luxury immortal-drama character sheet|readable studio key|taupe-gray|Chinese 3D xianxia donghua from one same series/i.test(compiled))
           brief.push("编译混入了旧版画风");
         if (/Do not add gauze|Do not add motifs|Keep a single-layer xianxia robe|no separate inner color/i.test(compiled))
           brief.push("编译仍在用禁令剥掉画风");
-        if (!/Style feel: same series/.test(compiled)) brief.push("正文缺少 Style feel");
+        if (!/Style feel: the same painter/.test(compiled)) brief.push("正文缺少 Style feel");
         if (/\b(?:like|as if|as though)\s+\w+/i.test(compiled.split("Face:")[1]?.split("\n")[0] || ""))
           brief.push("Face 仍在直译比喻");
         if (!compiled.endsWith(selectedVisualStyleRule(style))) brief.push("未以画风优先级结尾");
         const stored = (asset as { generationPrompt?: string }).generationPrompt || "";
         if (stored) {
-          if (!stored.startsWith(asset.kind === "character" ? sharedStyleDna : xianxiaWorldDna))
-            brief.push("已存生图词未用 v4 感觉稿");
           if (/taupe-gray|Do not add gauze|Chinese 3D xianxia donghua from one same series/i.test(stored))
             brief.push("已存生图词混入旧版");
-          brief.push(...lookBriefIssues(asset.kind, stored, facts));
         }
         if (asset.name === "古梧青鸟" && /xianxia robe construction|Keep a single-layer xianxia robe/.test(compiled))
           brief.push("青鸟编译仍在穿袍");
@@ -169,6 +168,34 @@ test("未按登记修复的走样稿，形制闸能抓住改物件种类", () =>
           brief.push("苦哀被写成贴面空板");
         if (asset.name === "空瞳窥伺" && /blank plate flush to the face/i.test(asset.prompt))
           brief.push("空瞳被写成贴面空板");
+        if (asset.name === "空瞳窥伺" && /silhouette sheet|fully opaque silhouette/.test(compiled))
+          brief.push("空瞳仍是剪影铜像");
+        if ((asset.name === "年轮大殿" || asset.name === "药寮") && /mist-wrapped jagged peaks|soft overcast daylight from above/.test(compiled))
+          brief.push("室内景仍在用露天天光和山峦");
+        if (asset.name === "年轮大殿" && /Time \/ weather: overcast day|skylight|sky well|ridge gap|light shaft/.test(compiled))
+          brief.push("正殿仍是露天天光或漏顶");
+        if (asset.name === "年轮大殿" && !/closed far wall|distant closed end wall/.test(compiled))
+          brief.push("正殿没有封死尽头墙");
+        if (asset.name === "年轮大殿" && (!/palace-nave|金柱|columns thicker than a standing person/.test(compiled) || !/shrine-canopy|shrine dais|神位/.test(compiled)))
+          brief.push("正殿没有宗门主殿尺度");
+        if (asset.name === "药寮" && /Time \/ weather: overcast day|wet mist|skylight|sky well|ridge gap|light shaft/.test(compiled))
+          brief.push("药寮写成了露天或漏顶");
+        if (asset.name === "药寮" && !/boarded timber ceiling|solid opaque ceiling|continuous timber ceiling|closed medicine room/.test(compiled))
+          brief.push("药寮没有封死屋顶");
+        if (asset.name === "药寮" && /晚晴|labeled/.test(compiled))
+          brief.push("药寮编译仍有柜字");
+        if (asset.name === "药寮" && !/lacquered/.test(compiled))
+          brief.push("药寮没有跟大殿同一套材质语言");
+        if (asset.kind === "character" && asset.name !== "古梧青鸟" && !/Look angle: three-quarter|isolated front|isolated left profile|one full-body three-quarter/.test(compiled))
+          brief.push("人物定妆不是三视图");
+        if (asset.name === "年轮大殿" && /human-scale year-ring|far wall fills the end of the frame|Camera inside a roofed room/.test(compiled))
+          brief.push("正殿被写成小房间");
+        if (asset.name === "年轮大殿" && !/year-ring|wutong|金柱|lacquered/.test(compiled))
+          brief.push("正殿没有仙侠宗门主殿形制");
+        if (asset.name === "年轮大殿" && !/shrine-canopy|shrine dais|神位|dougong|藻井|caisson/.test(compiled))
+          brief.push("正殿没有神龛形制");
+        if (asset.name === "倒置万相炉" && !/three legs|ding-furnace/.test(compiled))
+          brief.push("炉看不出鼎");
       } catch (error) {
         compileError = error instanceof Error ? error.message : String(error);
       }

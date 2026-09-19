@@ -86,10 +86,10 @@ test("更换参考后重试使用新参考，并拒绝选用旧画风候选", as
     f.store.publish(current.id,current.revision,JSON.stringify(old));
     await expect(f.pipeline.selectAsset(current,prop().id,old.data.assets[0].imageId)).rejects.toThrow("旧画风");
     const result = await f.pipeline.retryAsset(current,prop().id,new AbortController().signal);
-    expect(f.calls.at(-1)!.refs).toEqual(["reference"]);
-    expect(f.calls.at(-1)!.prompt).toContain("Reference 1: production style only");
+    expect(f.calls.at(-1)!.refs).toEqual([]);
+    expect(f.calls.at(-1)!.prompt).not.toContain("REFERENCE ROLES");
     const candidate = result.data.assets[0].candidates!.at(-1)!;
-    expect(result.data.assets[0].candidateSpecs![candidate].referenceIds).toEqual(["reference"]);
+    expect(result.data.assets[0].candidateSpecs![candidate].referenceIds).toEqual([]);
     expect(result.data.assets[0].candidateSpecs![candidate].passed).toBe(true);
     const before = f.store.tasks(f.project.id).find(t=>t.stage===4)!;
     const selected = await f.pipeline.selectAsset(current,prop().id,candidate);
@@ -185,14 +185,14 @@ test("通用仙侠独立生图，不向其他人物和道具传递沈不言", as
     expect(later.every((c) => c.prompt.startsWith("UNIVERSAL XIANXIA STYLE\n"))).toBe(true);
     expect(later.every((c) => c.prompt.includes("SERIES LOOK BRIEF"))).toBe(true);
     expect(later.every((c) => !/SAME SERIES STAGE|MODULE —/.test(c.prompt))).toBe(true);
-    expect(later.filter((c) => !/Look angle: (front|side)/.test(c.prompt)).every((c) => c.refs.length === 0)).toBe(true);
+    expect(later.filter((c) => !/Look angle: isolated (front|left profile)/.test(c.prompt)).every((c) => c.refs.length === 0)).toBe(true);
     expect(later.every((c) => !c.prompt.includes("REFERENCE ROLES"))).toBe(true);
   } finally {
     f.store.db.close();
   }
 });
 
-test("通用仙侠绑定美术参考后，每张图只锁渲染不锁身份", async () => {
+test("作品里存的画风参考图不进入生图，定妆主图走纯文生图", async () => {
   const f = setup("donghua3d", () => ({ voices: [] }));
   try {
     const task = f.store.tasks(f.project.id).find((t) => t.stage === 3)!;
@@ -215,10 +215,9 @@ test("通用仙侠绑定美术参考后，每张图只锁渲染不锁身份", as
     });
     expect(f.store.visualStyle(f.project.id).referenceImageId).toBe("style-ref");
     expect(f.calls.length).toBeGreaterThanOrEqual(3);
-    expect(f.calls.every((c) => c.refs.includes("style-ref"))).toBe(true);
-    expect(f.calls.every((c) => c.prompt.includes("REFERENCE ROLES"))).toBe(true);
-    expect(f.calls.every((c) => c.prompt.includes("style high"))).toBe(true);
-    expect(f.calls.every((c) => c.prompt.includes("likeness low") || c.prompt.includes("Do not copy the person"))).toBe(true);
+    expect(f.calls.every((c) => !c.refs.includes("style-ref"))).toBe(true);
+    expect(f.calls.filter((c) => !/Look angle: isolated/.test(c.prompt)).every((c) => c.refs.length === 0)).toBe(true);
+    expect(f.calls.every((c) => !c.prompt.includes("style high"))).toBe(true);
   } finally {
     f.store.db.close();
   }
@@ -268,7 +267,7 @@ Camera: wide establishing`,
     expect(f.calls[0].prompt).toContain("Shen Buyan");
     expect(f.calls).toHaveLength(9);
     expect(f.stats.peak).toBe(lookImageConcurrency);
-    expect(f.calls.filter((c) => !/Look angle: (front|side)/.test(c.prompt) && !c.prompt.includes("Shen Buyan")).every((c) => c.refs.length === 0)).toBe(true);
+    expect(f.calls.filter((c) => !/Look angle: isolated (front|left profile)/.test(c.prompt) && !c.prompt.includes("Shen Buyan")).every((c) => c.refs.length === 0)).toBe(true);
   } finally {
     f.store.db.close();
   }
@@ -341,7 +340,7 @@ test("已确认定妆可开新修订追加后集，保留已有资产", async ()
   }
 });
 
-test("通用仙侠即使保存了人物主参考，也只作为画风参考，不复制身份", () => {
+test("作品里存的画风参考图不挂进定妆生图", () => {
   const f = setup("donghua3d");
   try {
     f.store.bindMasterLookRef(f.project.id, "shen-reference");
@@ -351,12 +350,11 @@ test("通用仙侠即使保存了人物主参考，也只作为画风参考，�
     const scene = { ...source, id: "gate:main", name: "山门", kind: "scene" as const };
     for (const asset of [other, scene, { ...source, kind: "prop" as const, id: "sword:main" }]) {
       const refs = f.pipeline.assetReferences(task, asset, [source, asset]);
-      expect(refs.ids).toEqual(["shen-reference"]);
-      expect(refs.notes).toContain("style high");
-      expect(refs.notes).toMatch(/likeness low|Do not copy the person|Draw no people/);
+      expect(refs.ids).toEqual([]);
+      expect(refs.notes).toBe("");
     }
     expect(() => f.pipeline.assetReferences(task, { ...scene, sourceAssetId: source.id }, [source, scene])).toThrow("场景定妆只能使用场景参考");
-    expect(f.pipeline.assetReferences(task, other, [other], "gu-own-reference").ids).toEqual(["gu-own-reference", "shen-reference"]);
+    expect(f.pipeline.assetReferences(task, other, [other], "gu-own-reference").ids).toEqual(["gu-own-reference"]);
   } finally { f.store.db.close(); }
 });
 
@@ -568,24 +566,24 @@ test("关闭审核后复用旧失败图片，不因审核反馈再次生图", as
   } finally { f.store.db.close(); }
 });
 
-const hallLook = () => ({
-  id: "scene-dadian:default",
-  name: "年轮大殿",
+const gateLook = () => ({
+  id: "scene-shanmen:default",
+  name: "梧桐木纹山门",
   kind: "scene" as const,
   promptFormat: "scene-content-v1" as const,
   prompt: `CONTENT — SCENE (fill per location):
-Place: indoor axial main hall
-Enclosure: indoor enclosed hall
-Scale: hall deep enough for facing seats
+Place: sect mountain gate
+Enclosure: mountain gate, columns and steps as one body
+Scale: gate taller than a person
 Time / weather: overcast day
-Near camera: dark timber beams
-Mid: facing seats
-Far: shrine-end root
+Near camera: gate columns
+Mid: stone steps
+Far: mountain path
 Materials: dark timber
 Set dressing: none
 People: none
-Camera: wide indoor hall`,
-  identity: "室内中轴正殿",
+Camera: wide mountain gate`,
+  identity: "青梧宗山门",
   state: "基础",
 });
 
@@ -593,12 +591,12 @@ test("同一画风下 CONTENT 没变则保留旧图，牌匾改了才重出", as
   const f = setup("donghua3d");
   try {
     f.store.setModelReviewEnabled(f.project.id, false);
-    await f.produce({ type: "assets", data: { summary: "殿", assets: [hallLook()], voices: [] } });
+    await f.produce({ type: "assets", data: { summary: "门", assets: [gateLook()], voices: [] } });
     expect(f.calls).toHaveLength(1);
     const kept = f.checkpoint();
     kept.data.assets[0].generationStyleKey = JSON.stringify([
       "donghua3d",
-      "xianxia-universal-v4",
+      "xianxia-universal-v9",
       f.store.visualStyle(f.project.id).prompt,
       "",
       "",
@@ -610,7 +608,7 @@ test("同一画风下 CONTENT 没变则保留旧图，牌匾改了才重出", as
     f.calls.length = 0;
     await f.produce(kept);
     expect(f.calls).toHaveLength(0);
-    kept.data.assets[0].prompt = hallLook().prompt.replace(
+    kept.data.assets[0].prompt = gateLook().prompt.replace(
       "Set dressing: none",
       "Set dressing: lintel plaque 门楣匾额写「青梧宗」三字",
     );

@@ -28,6 +28,16 @@ import {
   sceneSheetModule,
   sharedStyleDna,
   xianxiaWorldDna,
+  xianxiaIndoorWorldDna,
+  indoorSceneSheetModule,
+  indoorHallSheetModule,
+  invertedFurnaceFormLine,
+  catalogLookGrades,
+  masterReferenceNote,
+  hallScaleReferenceNote,
+  indoorStyleFromHallNote,
+  isHallLookAsset,
+  isMedicineRoomLookAsset,
   productionVisualPrompt,
   visualReviewPrompt,
   selectedVisualStyleRule,
@@ -55,37 +65,96 @@ test("通用仙侠画风写的是参考图的感觉，身份留给各资产内�
   const t = templates.find((x) => x.id === "donghua3d")!;
   expect(t.prompt).toBe(sharedStyleDna);
   expect(donghuaStylePrompt.startsWith("UNIVERSAL XIANXIA STYLE\n")).toBe(true);
-  expect(donghuaStyleVersion).toBe("xianxia-universal-v4");
-  // 感觉：半写实 3D CG 仙侠海报质感、冷灰银青调、云雾山峦、柔和天光、国漫仙人脸、风动发衣
-  expect(sharedStyleDna).toContain("Semi-realistic 3D CG Chinese xianxia key art");
-  expect(sharedStyleDna).toContain("cold, ethereal, immortal");
-  expect(sharedStyleDna).toContain("grey-silver-blue");
-  expect(sharedStyleDna).toContain("mist-wrapped jagged peaks");
-  expect(sharedStyleDna).toContain("soft overcast daylight");
-  expect(sharedStyleDna).toContain("manhua-immortal features");
-  expect(sharedStyleDna).toContain("lifted by mountain wind");
-  expect(sharedStyleDna).toContain("never plastic toy 3D, never Pixar");
-  // 身份差异归内容：不同角色不能一张脸，素衣仍是这一族
+  expect(donghuaStyleVersion).toBe("xianxia-universal-v9");
+  // 只锁渲染语言。黑白银、山雾、香烟是 Look / 设定，不写进画风。
+  expect(sharedStyleDna).toContain("[STYLE]");
+  expect(sharedStyleDna).toContain("cinematic 3D CGI still");
+  expect(sharedStyleDna).toContain("hyper-detailed PBR");
+  expect(sharedStyleDna).toContain("filmic");
+  expect(sharedStyleDna).toContain("idealized realistic human");
+  expect(sharedStyleDna).toContain("not painterly 2D");
+  expect(sharedStyleDna).not.toContain("fashion catalog");
+  expect(sharedStyleDna).not.toContain("grey seamless");
+  expect(sharedStyleDna).toContain("they come from LOOK and SUBJECT");
+  expect(sharedStyleDna).toContain("Same rendering language for characters, props, and sets");
+  expect(sharedStyleDna).not.toContain("ink-black, silver and bone-white");
+  expect(sharedStyleDna).not.toContain("dark lacquer and cool silver");
+  expect(sharedStyleDna).not.toContain("cool volumetric air");
+  expect(sharedStyleDna).not.toContain("manhua-immortal features");
+  expect(sharedStyleDna).not.toContain("mist-wrapped jagged peaks");
+  expect(sharedStyleDna).not.toContain("behind every subject");
+  expect(sharedStyleDna).not.toContain("soft overcast daylight from above");
+  expect(sharedStyleDna).not.toContain("mountain wind");
   expect(sharedStyleDna).toContain("different characters must not share one face");
-  expect(sharedStyleDna).toContain("plain cloth stays plain, and plain cloth still reads as this same xianxia world");
-  // 不再写棚拍、不再把画风元素写成禁令
+  expect(sharedStyleDna).toContain("plain cloth stays plain");
   expect(sharedStyleDna).not.toMatch(/taupe-gray|studio key from front-left|Do not add gauze|luxury immortal-drama/);
   expect(sharedStyleDna).not.toMatch(/doll-smooth|SAME SERIES STAGE|XIANXIA DONGHUA LOOK/);
   expect(xianxiaWorldDna).toContain("Occupancy: empty of figures");
-  expect(xianxiaWorldDna).not.toMatch(/Faces:|Costume feel:|Hair and fabric:/);
+  expect(xianxiaWorldDna).not.toMatch(/Faces:|Costume language:|Hair and fabric:/);
+  expect(xianxiaIndoorWorldDna).toBe(xianxiaWorldDna);
   expect(characterSheetModule).toContain("series character sheet");
-  expect(characterSheetModule).toContain("softly blurred mist and distant peaks");
+  expect(characterSheetModule).toContain("one full-body three-quarter");
+  expect(characterSheetModule).not.toContain("three full-body views");
+  expect(characterSheetModule).toContain("Empty ground");
+  expect(characterSheetModule).not.toContain("distant peaks");
   expect(characterSheetModule).not.toContain("taupe-gray");
   expect(propSheetModule).toContain("One reusable object");
   expect(propSheetModule).not.toContain("ritual");
-  expect(propSheetModule).not.toContain("taupe-gray");
+  expect(propSheetModule).not.toContain("distant peaks");
   expect(sceneSheetModule).toContain("series set plate");
-  expect(sceneSheetModule).toContain("cloud-wrapped peaks");
+  expect(sceneSheetModule).not.toContain("cloud-wrapped peaks");
+  expect(indoorSceneSheetModule).toContain("Camera inside a roofed room");
+  expect(indoorHallSheetModule).toContain("palatial worship-and-audience hall");
+  expect(invertedFurnaceFormLine).toContain("three legs");
+  expect(masterReferenceNote("character")).toContain("rendering language only");
+  expect(masterReferenceNote("character")).toContain("weather, fog");
+  expect(masterReferenceNote("character")).toContain("mountains");
+  expect(masterReferenceNote("character")).not.toContain("atmosphere");
+  expect(masterReferenceNote("scene")).toContain("This scene's own enclosure");
+  expect(isHallLookAsset({ kind: "scene", name: "年轮大殿", id: "scene-dadian:default" })).toBe(true);
+  expect(isHallLookAsset({ kind: "scene", name: "药寮", id: "scene-yaoliao:default" })).toBe(false);
+  expect(isMedicineRoomLookAsset({ kind: "scene", name: "药寮", id: "scene-yaoliao:default" })).toBe(true);
+  expect(indoorStyleFromHallNote()).toContain("STYLE reference only");
+  expect(indoorStyleFromHallNote()).toContain("no writing");
+  expect(hallScaleReferenceNote()).toContain("TYPE reference");
+  expect(hallScaleReferenceNote()).toContain("Do not copy this photograph's plaque text");
+  expect(hallScaleReferenceNote()).toContain("four blind walls");
 });
 
 const filledContent = characterContentTemplate.replace(/\[[^\]]+\]/g, "none");
 const filledProp = propContentTemplate.replace(/\[[^\]]+\]/g, "none");
 const filledScene = sceneContentTemplate.replace(/\[[^\]]+\]/g, "none");
+
+test("Look 是可选调色插件，不写进画风；点名才进编译", () => {
+  expect(catalogLookGrades["cold-silver"]).toContain("[LOOK]");
+  expect(sharedStyleDna).not.toContain("[LOOK]");
+  const base = { id: "donghua3d", prompt: donghuaStylePrompt, version: donghuaStyleVersion };
+  const silver = filledContent
+    .replace("Subject: none", "Subject: youth Chinese male xianxia sword lord")
+    .replace("Face: none", "Face: pale skin, long sharp brows, cold grey eyes, thin lips, narrow jaw");
+  const plain = assetVisualPrompt(base, {
+    kind: "character",
+    name: "试色",
+    promptFormat: "character-content-v1",
+    prompt: silver,
+    identity: "",
+    state: "",
+  });
+  const graded = assetVisualPrompt(
+    { ...base, lookGrade: "warm-cinnabar" },
+    {
+      kind: "character",
+      name: "试色",
+      promptFormat: "character-content-v1",
+      prompt: silver,
+      identity: "",
+      state: "",
+    },
+  );
+  expect(plain).not.toContain("[LOOK]");
+  expect(graded).toContain(catalogLookGrades["warm-cinnabar"]);
+  expect(plain.split("[STYLE]")[1]?.slice(0, 180)).toBe(graded.split("[STYLE]")[1]?.slice(0, 180));
+});
 
 test("作品锁定的通用仙侠原文生图时不被目录稿替换", () => {
   const locked = `UNIVERSAL XIANXIA STYLE
@@ -540,8 +609,8 @@ test("不同服装及单图的画风要求不能覆盖三类资产的全剧风�
     expect(p.endsWith(selectedVisualStyleRule(style))).toBe(true);
     expect(p).toContain("SERIES LOOK BRIEF");
     expect(p).toContain("Every outfit must belong to the same Chinese xianxia world");
-    expect(p).toContain("they cannot change the selected art direction");
-    expect(p).toContain("Do not render as plastic toy, Pixar, flat anime cel, modern coat or product photography");
+    expect(p).toContain("they cannot change the rendering language");
+    expect(p).toContain("Not anime, not painterly 2D, not illustration brushwork");
     expect(p.slice(p.indexOf("SERIES LOOK BRIEF"))).not.toMatch(/render as 2D illustration/i);
   }
 });
@@ -561,11 +630,11 @@ test("仙侠内容字段会编译成同一套画风描述，布衣窄袖也不�
   expect(childLook).toContain("Outer robe: none specified; the inner robe is the full-length robe");
   expect(childLook).toContain("faded undyed old cloth");
   expect(childLook).toContain("traditional Chinese xianxia robe construction");
-  expect(childLook).toContain("plain cloth still reads as this xianxia world");
+  expect(childLook).toContain("the same painter as every other sheet");
   expect(childLook).not.toMatch(/Do not add|Keep a single-layer/);
   expect(youthLook).toContain("narrow sleeves");
   expect(youthLook).toContain("charcoal-teal");
-  expect(youthLook).toContain("Style feel: same series as every other sheet");
+  expect(youthLook).toContain("Style feel: the same painter as every other sheet");
   const propLook = compileXianxiaLook("prop", filledProp.replace("Item: none", "Item: inverted year-ring iron ruler"));
   expect(propLook).toContain("inverted year-ring iron ruler");
   expect(propLook).not.toContain("ritual or sect artifact");
@@ -573,7 +642,7 @@ test("仙侠内容字段会编译成同一套画风描述，布衣窄袖也不�
   const sceneLook = compileXianxiaLook("scene", filledScene.replace("Place: none", "Place: Qingwu mountain gate"));
   expect(sceneLook).toContain("Qingwu mountain gate");
   expect(sceneLook).toContain("series-wide empty set plate");
-  expect(sceneLook).toContain("Style feel: same series as every other plate");
+  expect(sceneLook).toContain("Style feel: the same painter as every other plate");
   expect(sceneLook).toContain("Draw no people");
   expect(propLook).toContain("No person, hand, face, silhouette or mannequin");
   for (const [kind, content] of [["character", child], ["character", youth], ["prop", filledProp], ["scene", filledScene]] as const) {
@@ -705,7 +774,7 @@ test("编译空眼、倒置炉和倒年轮尺只写正面形制", () => {
       .replace("Place: none", "Place: indoor axial main hall")
       .replace("Enclosure: none", "Enclosure: indoor enclosed hall"),
   );
-  expect(hall).toContain("roofed indoor hall with beams");
+  expect(hall).toContain("closed far wall");
   expect(hall).not.toContain("open courtyard");
   const gate = compileXianxiaLook(
     "scene",
@@ -1126,7 +1195,7 @@ test("定妆编译是全剧 brief，画风原文仍最高，尺寸固定，角�
   expect(prompt.endsWith(selectedVisualStyleRule(style))).toBe(true);
   expect(prompt).toContain("SERIES LOOK BRIEF");
   expect(prompt).toContain("series-wide character sheet");
-  expect(prompt).toContain("Style feel: same series as every other sheet");
+  expect(prompt).toContain("Style feel: the same painter as every other sheet");
   expect(prompt).toContain(characterLookAngleLine("three-quarter"));
   const front = assetVisualPrompt(style, {
     kind: "character",
@@ -1135,7 +1204,7 @@ test("定妆编译是全剧 brief，画风原文仍最高，尺寸固定，角�
     identity: "",
     state: "",
   }, [], { angle: "front" });
-  expect(front).toContain("Look angle: front");
+  expect(front).toContain(characterLookAngleLine("front"));
   expect(front.startsWith(sharedStyleDna)).toBe(true);
   expect(front.endsWith(selectedVisualStyleRule(style))).toBe(true);
   const plaque = compileXianxiaLook(
@@ -1193,9 +1262,9 @@ Same visual family for characters, props, and sets.`;
   ])
     expect(brief).not.toContain(forbidden);
   // 明确写：媒介、脸、光、仙气跟着画风走；只有登记写死的差异才锁
-  expect(brief).toMatch(/Style feel:.*same series/i);
-  expect(brief).toMatch(/manhua-immortal face|donghua face/i);
-  expect(brief).toMatch(/plain cloth still reads as (this|the same) xianxia/i);
+  expect(brief).toMatch(/Style feel:.*same painter/i);
+  expect(brief).toMatch(/idealized realistic face|cinematic 3D CGI/i);
+  expect(brief).toContain("the selected style decides fabric feel");
   expect(lookBriefIssues("character", brief, facts)).toEqual([]);
 });
 
@@ -1249,7 +1318,7 @@ test("空眼与比喻脸的 CONTENT 编译后被改写，不算漂移，出图�
   const facts = { name: "空眼殿主", identity: "空眼面具贴面，殿主。", form: "贴面空板，两口空井。" };
   const generationPrompt = assetVisualPrompt(style, { kind: "character", name: facts.name, promptFormat: "character-content-v1", prompt: emptyEye, identity: facts.identity, state: "" }, [], { facts });
   expect(generationPrompt).toContain("Face: a blank plate flush to the face with only two punched open wells");
-  expect(generationPrompt).toContain("the blank plate sits where the face would be");
+  expect(generationPrompt).toContain("blank plate where the face would be");
   expect(generationPrompt).not.toMatch(/Style feel:[^\n]*manhua-immortal face/);
   expect(assetContentDrifted({ kind: "character", prompt: emptyEye, generationPrompt })).toBe(false);
 
@@ -1280,7 +1349,7 @@ test("英文字段里的 no X 只删这一项，不吞掉后面的脸；三视�
   for (const angle of ["front", "side"] as const) {
     const view = assetVisualPrompt(style, { kind: "character", name: facts.name, promptFormat: "character-content-v1", prompt: emptyEye, identity: facts.identity, state: "" }, [], { angle, facts });
     expect(view).toContain("Face: a blank plate flush to the face with only two punched open wells");
-    expect(view).toContain(`Look angle: ${angle}`);
+    expect(view).toContain(characterLookAngleLine(angle));
     expect(lookBriefIssues("character", view, facts)).toEqual([]);
   }
 });
@@ -1297,6 +1366,12 @@ Same visual family for characters, props, and sets.`;
   expect(normalizedXianxiaDna(v1)).toBe(`${sharedStyleDna}\n作品额外要求：暖金色轮廓光。`);
   expect(normalizedXianxiaDna(v3)).toBe(sharedStyleDna);
   expect(normalizedXianxiaDna(sharedStyleDna)).toBe(sharedStyleDna);
+  const v4mountains = `UNIVERSAL XIANXIA STYLE
+Semi-realistic 3D CG Chinese xianxia key art from one same series.
+Air and place: mist-wrapped jagged peaks behind every subject.
+Same visual family for characters, props, and sets.`;
+  expect(normalizedXianxiaDna(v4mountains)).toBe(sharedStyleDna);
+  expect(normalizedXianxiaDna(v4mountains)).not.toContain("behind every subject");
   expect(normalizedXianxiaDna("UNIVERSAL XIANXIA STYLE\n用户自定原文")).toBe("UNIVERSAL XIANXIA STYLE\n用户自定原文");
   expect(normalizedXianxiaDna("赛璐璐")).toBe("赛璐璐");
   expect(normalizedXianxiaDna(v1)).not.toContain("undefined");
@@ -1328,15 +1403,17 @@ test("编译对照登记：鸟不加袍、树不加台、符不改玉牌、匣�
     form: "轮廓为焦金与枯骨漆混在一起的暗影，像被洗掉五官的脸。",
   };
   expect(lookContentIssues("character", shadow.replace("Inner robe: none", "Inner robe: cyan xianxia robe"), shadowFacts)).toEqual(
-    expect.arrayContaining([expect.stringContaining("穿袍")]),
+    expect.arrayContaining([expect.stringContaining("华袍")]),
   );
   const shadowBrief = compileXianxiaLook("character", shadow, "three-quarter", shadowFacts);
-  // 暗影是一整块不透明的漆色剪影，不能写成“没穿衣服”的人体，否则模型画出裸身、供应商审核直接拒绝。
-  expect(shadowBrief).toContain("fully opaque silhouette");
-  expect(shadowBrief).toContain("not as a bare body");
+  // 暗影仍是人物定妆：同款仙侠袍、青年体量、有发；焦金枯骨漆是脸和肤，不是铜像或剪影生物。
+  expect(shadowBrief).toContain("xianxia robe construction");
+  expect(shadowBrief).toContain("Young-adult cultivator proportions");
+  expect(shadowBrief).toContain("ink-dark hair");
+  expect(shadowBrief).not.toContain("fully opaque silhouette");
+  expect(shadowBrief).not.toContain("silhouette sheet");
+  expect(shadowBrief).not.toContain("shadow being");
   expect(shadowBrief).not.toContain("No garments, no separate robe, no boots");
-  expect(shadowBrief).not.toContain("xianxia robe construction");
-  expect(shadowBrief).not.toContain("Keep a single-layer xianxia robe");
   expect(lookBriefIssues("character", shadowBrief, shadowFacts)).toEqual([]);
 
   const tree = filledScene
@@ -1513,6 +1590,157 @@ test("空瞳窥伺不被同实体的空眼残面具改成贴面空板", () => {
   expect(
     compileXianxiaLook("character", filledContent.replace("Face: none", face), "three-quarter", facts),
   ).not.toContain("blank plate flush to the face");
+});
+
+test("室内正殿和药寮必须封顶，暗影跟人物同袍，倒置炉看得出鼎", () => {
+  const style = { id: "donghua3d", prompt: donghuaStylePrompt };
+  const hallFacts = {
+    name: "年轮大殿",
+    identity: "青梧宗年轮大殿，室内中轴正殿。有顶有梁。",
+    state: "室内正殿。暗木梁架，两侧议事席成列。",
+  };
+  const hallContent = filledScene
+    .replace("Place: none", "Place: indoor axial hall")
+    .replace("Enclosure: none", "Enclosure: indoor enclosed hall")
+    .replace("Camera: none", "Camera: wide indoor hall");
+  const hall = assetVisualPrompt(
+    style,
+    {
+      name: "年轮大殿",
+      kind: "scene",
+      promptFormat: "scene-content-v1",
+      prompt: hallContent,
+      identity: hallFacts.identity,
+      state: hallFacts.state,
+    },
+    [],
+    { facts: hallFacts },
+  );
+  expect(hall.startsWith(xianxiaWorldDna)).toBe(true);
+  expect(hall).toContain(indoorHallSheetModule);
+  expect(hall).not.toContain("Camera inside a roofed room");
+  expect(hall).toContain("ancestral");
+  expect(hall).toContain("year-ring");
+  expect(hall).toContain("shrine-canopy");
+  expect(hall).toContain("金柱");
+  expect(hall).toContain("boarded coffered");
+  expect(hall).not.toContain("kneeling cushions");
+  expect(hall).not.toContain("skylight");
+  expect(hall).not.toContain("sky well");
+  expect(hall).not.toContain("藻井");
+  expect(hall).toContain("closed far wall");
+  expect(hall).toContain("palace-nave");
+  expect(hall).toContain("thicker than a standing person");
+  expect(hall).toContain("神位");
+  expect(hall).toContain("year-ring root");
+  expect(hall).toContain("hanging palace lanterns");
+  expect(hall).not.toContain("human-scale year-ring");
+  expect(hall).not.toContain("Time / weather: overcast day");
+  expect(hall).not.toContain("mist-wrapped jagged peaks");
+  expect(hall).not.toContain("soft overcast daylight from above");
+  expect(hall).not.toContain("Designed mist and cloud-wrapped peaks");
+  expect(hall).not.toContain("incense smoke");
+  expect(hall).not.toContain("clinging mist");
+  expect(hall).not.toContain("[LOOK]");
+  expect(lookBriefIssues("scene", hall, hallFacts)).toEqual([]);
+  expect(assetContentDrifted({ kind: "scene", prompt: repairLookPrompt("scene", hallContent, hallFacts), generationPrompt: hall })).toBe(false);
+
+  const roomFacts = {
+    name: "药寮",
+    identity: "青梧宗药寮。续命、记脉、轮守之处。",
+    state: "木榻，梧桐木纹梁。药香苦。",
+  };
+  const roomContent = filledScene
+    .replace("Place: none", "Place: enclosed medicine room")
+    .replace("Enclosure: none", "Enclosure: indoor enclosed hall")
+    .replace("Scale: none", "Scale: human-scale room")
+    .replace("Camera: none", "Camera: human-scale room");
+  const room = assetVisualPrompt(
+    style,
+    {
+      name: "药寮",
+      kind: "scene",
+      promptFormat: "scene-content-v1",
+      prompt: roomContent,
+      identity: roomFacts.identity,
+      state: roomFacts.state,
+    },
+    [],
+    { facts: roomFacts },
+  );
+  expect(room.startsWith(xianxiaWorldDna)).toBe(true);
+  expect(room).toContain("human-scale");
+  expect(room).toContain("medicine room");
+  expect(room).toContain("boarded timber ceiling");
+  expect(room).toContain("dark lacquered");
+  expect(room).not.toContain("skylight");
+  expect(room).not.toContain("sky well");
+  expect(room).not.toContain("晚晴");
+  expect(room).not.toContain("labeled");
+  expect(room).not.toContain("plaster");
+  expect(room).not.toContain("Time / weather: overcast day");
+  expect(room).not.toContain("wet mist");
+  expect(room).not.toContain("mist-wrapped jagged peaks");
+  expect(room).not.toContain("soft overcast daylight from above");
+  expect(room).not.toMatch(/Architecture: this is a cultivation sect's fully enclosed axial main hall/);
+  expect(lookBriefIssues("scene", room, roomFacts)).toEqual([]);
+  expect(assetContentDrifted({ kind: "scene", prompt: repairLookPrompt("scene", roomContent, roomFacts), generationPrompt: room })).toBe(false);
+
+  const shadowFacts = {
+    name: "空瞳窥伺",
+    identity: "未具名的噬相殿窥伺。空而无瞳，面目可不清。",
+    form: "轮廓为焦金与枯骨漆混在一起的暗影，像被洗掉五官的脸。",
+  };
+  const shadowContent = filledContent
+    .replace("Subject: none", "Subject: youth Han xianxia Phixiang Hall unnamed phase-taker, medium height")
+    .replace("Face: none", "Face: scorched-gold mixed with bone-lacquer, empty gaze with two open holes");
+  const shadow = assetVisualPrompt(
+    style,
+    {
+      name: "空瞳窥伺",
+      kind: "character",
+      promptFormat: "character-content-v1",
+      prompt: shadowContent,
+      identity: shadowFacts.identity,
+      state: shadowFacts.form,
+    },
+    [],
+    { facts: shadowFacts },
+  );
+  expect(shadow).toContain(characterSheetModule);
+  expect(shadow).toContain("xianxia robe construction");
+  expect(shadow).toContain("Young-adult cultivator proportions");
+  expect(shadow).toContain("Living skin of this color");
+  expect(shadow).not.toContain("silhouette sheet");
+  expect(shadow).not.toContain("fully opaque silhouette");
+  expect(lookBriefIssues("character", shadow, shadowFacts)).toEqual([]);
+
+  const furnaceFacts = {
+    name: "倒置万相炉",
+    identity: "噬相殿公开夺相的炉鼎。碎镜拼鼎，鼎口朝下。",
+    state: "碗心碎镜拼成鼎，鼎口朝下。",
+  };
+  const furnaceContent = filledProp
+    .replace("Item: none", "Item: inverted ding, mouth downward")
+    .replace("Form: none", "Form: ding pieced from broken mirror, mouth downward");
+  const furnace = assetVisualPrompt(
+    style,
+    {
+      name: "倒置万相炉",
+      kind: "prop",
+      promptFormat: "prop-content-v1",
+      prompt: furnaceContent,
+      identity: furnaceFacts.identity,
+      state: furnaceFacts.state,
+    },
+    [],
+    { facts: furnaceFacts },
+  );
+  expect(furnace).toContain("ding pieced from broken mirror, mouth downward");
+  expect(furnace).toContain("three legs");
+  expect(furnace).toContain("ding-furnace");
+  expect(furnace).not.toMatch(/\bvase\b|\bbottle\b/);
+  expect(lookBriefIssues("prop", furnace, furnaceFacts)).toEqual([]);
 });
 
 test("枯萝袖中的空眼残片不能把苦脸改成贴面空板", () => {
